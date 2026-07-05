@@ -24,6 +24,20 @@
     max-width: 100vw;
     max-height: 100vh;
   }
+  #bgm-toggle {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 15;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,0.5);
+    color: #fff;
+    font-size: 16px;
+    cursor: pointer;
+  }
   .lb-overlay {
     position: absolute;
     inset: 0;
@@ -85,6 +99,7 @@
 </head>
 <body>
 <div id="game-container">
+  <button id="bgm-toggle" title="배경음악 켜기/끄기">🔊</button>
   <div id="leaderboard-overlay" class="lb-overlay hidden">
     <div class="lb-panel">
       <div id="lb-submit-view">
@@ -392,6 +407,79 @@ class SoundManager {
   click() { this.tone(700, 0.05, 'square', 0.06); }
 }
 const SFX = new SoundManager();
+
+/* ===================== 배경음악 (BGM) - Web Audio API로 직접 작곡한 오리지널 루프 =====================
+   외부 음원 파일을 쓰지 않고 코드로 직접 멜로디를 생성하기 때문에 저작권 문제가 없습니다.
+   3가지 패턴 중 매 세션마다 랜덤으로 하나가 선택되어 반복 재생됩니다. */
+const BGM_PATTERNS = [
+  { name: 'A', bpm: 132, melody: [523.25, 587.33, 659.25, 587.33, 523.25, 440.00, 392.00, 440.00], bassNote: 130.81 },
+  { name: 'B', bpm: 144, melody: [392.00, 440.00, 523.25, 440.00, 392.00, 349.23, 329.63, 349.23], bassNote: 146.83 },
+  { name: 'C', bpm: 118, melody: [440.00, 523.25, 587.33, 523.25, 440.00, 392.00, 440.00, 523.25], bassNote: 164.81 }
+];
+
+class BGMPlayer {
+  constructor() {
+    this.ctx = null;
+    this.intervalId = null;
+    this.playing = false;
+    this.muted = false;
+    this.pattern = null;
+    this.stepIndex = 0;
+  }
+  ensureCtx() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  playNote(freq, dur, type, gainVal) {
+    const t0 = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(gainVal, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + dur);
+  }
+  tick(stepSec) {
+    if (this.muted) { this.stepIndex++; return; }
+    const freq = this.pattern.melody[this.stepIndex % this.pattern.melody.length];
+    this.playNote(freq, stepSec * 0.85, 'triangle', 0.045);
+    if (this.stepIndex % 4 === 0) {
+      this.playNote(this.pattern.bassNote, stepSec * 3.6, 'sine', 0.05);
+    }
+    this.stepIndex++;
+  }
+  start() {
+    if (this.playing) return;
+    this.ensureCtx();
+    this.playing = true;
+    this.pattern = BGM_PATTERNS[Math.floor(Math.random() * BGM_PATTERNS.length)];
+    this.stepIndex = 0;
+    const stepMs = (60000 / this.pattern.bpm) / 2; // 8분음표 단위
+    this.intervalId = setInterval(() => this.tick(stepMs / 1000), stepMs);
+  }
+  toggleMute() {
+    this.muted = !this.muted;
+    return this.muted;
+  }
+}
+const BGM = new BGMPlayer();
+
+// 브라우저 자동재생 정책 때문에, 사용자의 첫 클릭/키 입력이 있을 때 BGM을 시작합니다.
+function startBGMOnce() {
+  BGM.start();
+  document.removeEventListener('pointerdown', startBGMOnce);
+  document.removeEventListener('keydown', startBGMOnce);
+}
+document.addEventListener('pointerdown', startBGMOnce);
+document.addEventListener('keydown', startBGMOnce);
+
+document.getElementById('bgm-toggle').addEventListener('click', () => {
+  const muted = BGM.toggleMute();
+  document.getElementById('bgm-toggle').textContent = muted ? '🔇' : '🔊';
+});
 
 /* ===================== 상수 ===================== */
 const STAGE_COUNT = 10;
