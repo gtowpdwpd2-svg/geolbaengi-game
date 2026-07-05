@@ -111,7 +111,7 @@
         <div id="lb-status"></div>
       </div>
       <div id="lb-rank-view" class="hidden">
-        <h3>🏆 TOP 10 랭킹</h3>
+        <h3 id="lb-rank-title">🏆 TOP 10 랭킹</h3>
         <ol id="lb-rank-list"></ol>
         <button id="lb-close-btn">닫기</button>
       </div>
@@ -148,38 +148,47 @@ auth.onAuthStateChanged((user) => {
 });
 
 /* ===================== 랭킹판 로직 =====================
-   구조: scores 컬렉션, 문서 ID = 유저의 익명 uid.
-   -> 유저 1명당 기록 1개만 존재하고, 더 빠른 기록일 때만 갱신 가능.
+   구조: 게임별로 별도 컬렉션(scores, scores_signal 등) 사용, 문서 ID = 유저의 익명 uid.
+   -> 유저 1명당 게임별 기록 1개만 존재하고, 더 빠른 기록일 때만 갱신 가능.
    -> 이 구조 자체가 "같은 계정으로 점수 도배"를 원천 차단합니다.
-   실제 배포 시 Firestore 콘솔 > 규칙 탭에 아래 규칙을 꼭 붙여넣어 주세요:
+   새 게임을 추가할 때마다 Firestore 콘솔 > 규칙 탭에 아래 패턴을 그대로 복사해서
+   컬렉션 이름만 바꿔 추가해주세요 (기존 규칙 블록들 사이에 이어붙이면 됩니다):
 
-   rules_version = '2';
-   service cloud.firestore {
-     match /databases/{database}/documents {
-       match /scores/{uid} {
-         allow read: if true;
-         allow create: if request.auth != null
-                       && request.auth.uid == uid
-                       && request.resource.data.time is number
-                       && request.resource.data.time >= 3
-                       && request.resource.data.time <= 300
-                       && request.resource.data.nickname is string
-                       && request.resource.data.nickname.size() > 0
-                       && request.resource.data.nickname.size() <= 10;
-         allow update: if request.auth != null
-                       && request.auth.uid == uid
-                       && request.resource.data.time is number
-                       && request.resource.data.time >= 3
-                       && request.resource.data.time <= 300
-                       && request.resource.data.time < resource.data.time
-                       && request.resource.data.nickname is string
-                       && request.resource.data.nickname.size() > 0
-                       && request.resource.data.nickname.size() <= 10;
-         allow delete: if false;
-       }
-     }
+   match /{collectionName}/{uid} {
+     allow read: if true;
+     allow create: if request.auth != null
+                   && request.auth.uid == uid
+                   && request.resource.data.time is number
+                   && request.resource.data.time >= 3
+                   && request.resource.data.time <= 300
+                   && request.resource.data.nickname is string
+                   && request.resource.data.nickname.size() > 0
+                   && request.resource.data.nickname.size() <= 10;
+     allow update: if request.auth != null
+                   && request.auth.uid == uid
+                   && request.resource.data.time is number
+                   && request.resource.data.time >= 3
+                   && request.resource.data.time <= 300
+                   && request.resource.data.time < resource.data.time
+                   && request.resource.data.nickname is string
+                   && request.resource.data.nickname.size() > 0
+                   && request.resource.data.nickname.size() <= 10;
+     allow delete: if false;
    }
+
+   (collectionName 자리에 실제로는 scores, scores_signal 처럼 구체적인 이름을 넣어야 합니다.
+    Firestore 규칙은 컬렉션 이름에 와일드카드를 쓸 수 없어서, 게임이 늘어날 때마다
+    이 블록을 통째로 복사해서 컬렉션 이름만 바꿔 추가해주시면 됩니다.)
 */
+
+// 게임별 표시 이름 (랭킹판 제목에 사용)
+const LEADERBOARD_LABELS = {
+  scores: '🌉 개똥 다리건너기',
+  scores_signal: '🚦 눈치 신호등 게임'
+};
+
+// 현재 열려있는 랭킹판이 어떤 게임 것인지 기억 (건너뛰기/닫기 버튼에서 참조)
+let activeLeaderboardCollection = 'scores';
 
 // 닉네임 형식 검증 (한글/영문/숫자만 허용, 1~10자)
 // 참고: 이건 형식 검증일 뿐 비속어 필터는 아닙니다.
@@ -189,24 +198,29 @@ function isValidNickname(name) {
   return NICKNAME_PATTERN.test(name.trim());
 }
 
-function showSubmitView(finalTime) {
-  document.getElementById('lb-time-display').textContent = `이번 기록: ${finalTime}초`;
+function showSubmitView(finalTime, collectionName = 'scores') {
+  activeLeaderboardCollection = collectionName;
+  const label = LEADERBOARD_LABELS[collectionName] || collectionName;
+  document.getElementById('lb-time-display').textContent = `[${label}] 이번 기록: ${finalTime}초`;
   document.getElementById('lb-submit-view').classList.remove('hidden');
   document.getElementById('lb-rank-view').classList.add('hidden');
   document.getElementById('lb-stats-view').classList.add('hidden');
   document.getElementById('leaderboard-overlay').classList.remove('hidden');
   document.getElementById('lb-status').textContent = '';
   document.getElementById('lb-nickname').value = '';
-  document.getElementById('lb-submit-btn').onclick = () => submitScore(finalTime);
+  document.getElementById('lb-submit-btn').onclick = () => submitScore(finalTime, collectionName);
   document.getElementById('lb-nickname').focus();
 }
 
-function showRankOnlyView() {
+function showRankOnlyView(collectionName = activeLeaderboardCollection) {
+  activeLeaderboardCollection = collectionName;
+  const label = LEADERBOARD_LABELS[collectionName] || collectionName;
+  document.getElementById('lb-rank-title').textContent = `🏆 ${label} TOP 10`;
   document.getElementById('lb-submit-view').classList.add('hidden');
   document.getElementById('lb-rank-view').classList.remove('hidden');
   document.getElementById('lb-stats-view').classList.add('hidden');
   document.getElementById('leaderboard-overlay').classList.remove('hidden');
-  loadLeaderboard();
+  loadLeaderboard(collectionName);
 }
 
 // 운영자용 플레이 데이터 확인 화면 (설문 없이 서버 로그로 확인)
@@ -220,30 +234,47 @@ async function showStatsView() {
   content.textContent = '불러오는 중...';
 
   try {
-    const [funnelDoc, deathsDoc] = await Promise.all([
+    const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc] = await Promise.all([
       db.collection('analytics').doc('funnel').get(),
-      db.collection('analytics').doc('stage_deaths').get()
+      db.collection('analytics').doc('stage_deaths').get(),
+      db.collection('analytics').doc('funnel_signal').get(),
+      db.collection('analytics').doc('signal_deaths').get()
     ]);
 
-    const funnel = funnelDoc.exists ? funnelDoc.data() : {};
-    const deaths = deathsDoc.exists ? deathsDoc.data() : {};
-    const starts = funnel.gameStarts || 0;
-    const clears = funnel.gameClears || 0;
-    const clearRate = starts > 0 ? ((clears / starts) * 100).toFixed(1) : '0.0';
+    let html = '';
 
-    let html = `<p><b>시작 횟수:</b> ${starts}회</p>`;
-    html += `<p><b>클리어 횟수:</b> ${clears}회 (클리어율 ${clearRate}%)</p>`;
-    html += `<p style="margin-top:8px;"><b>단계별 사망 횟수</b></p>`;
+    // 🌉 다리건너기 통계
+    const bFunnel = bridgeFunnelDoc.exists ? bridgeFunnelDoc.data() : {};
+    const bDeaths = bridgeDeathsDoc.exists ? bridgeDeathsDoc.data() : {};
+    const bStarts = bFunnel.gameStarts || 0;
+    const bClears = bFunnel.gameClears || 0;
+    const bRate = bStarts > 0 ? ((bClears / bStarts) * 100).toFixed(1) : '0.0';
 
-    let maxDeaths = 0;
+    html += `<p style="color:#ffe66d;"><b>🌉 개똥 다리건너기</b></p>`;
+    html += `<p>시작 ${bStarts}회 / 클리어 ${bClears}회 (${bRate}%)</p>`;
+    let bMax = 0;
+    for (let i = 0; i < STAGE_COUNT; i++) bMax = Math.max(bMax, bDeaths[`stage_${i}`] || 0);
     for (let i = 0; i < STAGE_COUNT; i++) {
-      maxDeaths = Math.max(maxDeaths, deaths[`stage_${i}`] || 0);
+      const count = bDeaths[`stage_${i}`] || 0;
+      const isMax = bMax > 0 && count === bMax;
+      html += `<div>${i + 1}단계: ${count}회${isMax ? ' 🔥' : ''}</div>`;
     }
 
-    for (let i = 0; i < STAGE_COUNT; i++) {
-      const count = deaths[`stage_${i}`] || 0;
-      const isMax = maxDeaths > 0 && count === maxDeaths;
-      html += `<div>${i + 1}단계: ${count}회${isMax ? ' 🔥 (통곡의 벽)' : ''}</div>`;
+    // 🚦 신호등 게임 통계
+    const sFunnel = signalFunnelDoc.exists ? signalFunnelDoc.data() : {};
+    const sDeaths = signalDeathsDoc.exists ? signalDeathsDoc.data() : {};
+    const sStarts = sFunnel.gameStarts || 0;
+    const sClears = sFunnel.gameClears || 0;
+    const sRate = sStarts > 0 ? ((sClears / sStarts) * 100).toFixed(1) : '0.0';
+
+    html += `<p style="margin-top:10px; color:#ffe66d;"><b>🚦 눈치 신호등 게임</b></p>`;
+    html += `<p>시작 ${sStarts}회 / 클리어 ${sClears}회 (${sRate}%)</p>`;
+    let sMax = 0;
+    for (let i = 0; i < 10; i++) sMax = Math.max(sMax, sDeaths[`bucket_${i}`] || 0);
+    for (let i = 0; i < 10; i++) {
+      const count = sDeaths[`bucket_${i}`] || 0;
+      const isMax = sMax > 0 && count === sMax;
+      html += `<div>${i * 10}~${(i + 1) * 10}% 구간: ${count}회${isMax ? ' 🔥' : ''}</div>`;
     }
 
     content.innerHTML = html;
@@ -257,7 +288,7 @@ function hideLeaderboardOverlay() {
   document.getElementById('leaderboard-overlay').classList.add('hidden');
 }
 
-async function submitScore(finalTime) {
+async function submitScore(finalTime, collectionName = 'scores') {
   const nicknameInput = document.getElementById('lb-nickname');
   const status = document.getElementById('lb-status');
   const nickname = nicknameInput.value.trim();
@@ -280,7 +311,7 @@ async function submitScore(finalTime) {
   submitBtn.disabled = true;
 
   try {
-    const docRef = db.collection('scores').doc(currentUid);
+    const docRef = db.collection(collectionName).doc(currentUid);
     const doc = await docRef.get();
 
     if (!doc.exists || finalTime < doc.data().time) {
@@ -293,7 +324,7 @@ async function submitScore(finalTime) {
     } else {
       status.textContent = `이미 더 좋은 기록(${doc.data().time}초)이 있어요!`;
     }
-    setTimeout(() => showRankOnlyView(), 600);
+    setTimeout(() => showRankOnlyView(collectionName), 600);
   } catch (err) {
     console.error(err);
     status.textContent = '등록에 실패했습니다. 잠시 후 다시 시도해주세요.';
@@ -302,11 +333,11 @@ async function submitScore(finalTime) {
   }
 }
 
-async function loadLeaderboard() {
+async function loadLeaderboard(collectionName = 'scores') {
   const list = document.getElementById('lb-rank-list');
   list.innerHTML = '<li>불러오는 중...</li>';
   try {
-    const snapshot = await db.collection('scores').orderBy('time').limit(10).get();
+    const snapshot = await db.collection(collectionName).orderBy('time').limit(10).get();
     if (snapshot.empty) {
       list.innerHTML = '<li>아직 등록된 기록이 없습니다.</li>';
       return;
@@ -325,7 +356,7 @@ async function loadLeaderboard() {
   }
 }
 
-document.getElementById('lb-skip-btn').addEventListener('click', () => showRankOnlyView());
+document.getElementById('lb-skip-btn').addEventListener('click', () => showRankOnlyView(activeLeaderboardCollection));
 document.getElementById('lb-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
 document.getElementById('lb-stats-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
 
@@ -356,6 +387,18 @@ function logStageDeath(stageIdx) {
 }
 function logGameClear() {
   logAnalytics('funnel', 'gameClears');
+}
+
+// 신호등 게임 전용 로그 (별도 문서 사용 - 다리건너기 데이터와 섞이지 않도록)
+function logSignalStart() {
+  logAnalytics('funnel_signal', 'gameStarts');
+}
+function logSignalDeath(progressRatio) {
+  const bucket = Math.min(9, Math.floor(progressRatio * 10));
+  logAnalytics('signal_deaths', `bucket_${bucket}`);
+}
+function logSignalClear() {
+  logAnalytics('funnel_signal', 'gameClears');
 }
 
 /* ===================== 사운드 매니저 (Web Audio API로 직접 합성) ===================== */
@@ -527,9 +570,9 @@ const GAME_LIST = [
     key: 'signal',
     emoji: '🚦',
     title: '눈치 신호등 게임',
-    desc: '준비중입니다 (Coming Soon)',
-    enabled: false,
-    sceneKey: null
+    desc: '감시자 몰래 전진해서 결승선까지!',
+    enabled: true,
+    sceneKey: 'SignalScene'
   }
 ];
 
@@ -908,6 +951,224 @@ class MainScene extends Phaser.Scene {
   }
 }
 
+/* ===================== 신호등 게임 씬 - 눈치 신호등 게임 ===================== */
+const SIGNAL_TRACK_START_X = 130;
+const SIGNAL_TRACK_END_X = 800;
+const SIGNAL_TRACK_LENGTH = SIGNAL_TRACK_END_X - SIGNAL_TRACK_START_X;
+const SIGNAL_TRACK_Y = 300;
+const SIGNAL_SPEED = 160; // px/sec
+
+class SignalScene extends Phaser.Scene {
+  constructor() { super('SignalScene'); }
+
+  init() {
+    this.progress = 0; // 0 ~ SIGNAL_TRACK_LENGTH
+    this.lives = 3;
+    this.startTime = 0;
+    this.isMoving = false;
+    this.gameOver = false;
+    this.lightState = 'green'; // 'green' = 전진 가능, 'red' = 정지해야 함
+    this.lightTimer = 0;
+  }
+
+  create() {
+    hideLeaderboardOverlay();
+    this.startTime = this.time.now;
+    this.cameras.main.fadeIn(200, 0, 0, 0);
+    logSignalStart();
+
+    this.add.rectangle(0, 0, 900, 560, 0x1e2a3a).setOrigin(0);
+    for (let i = 0; i < 40; i++) {
+      this.add.circle(
+        Phaser.Math.Between(0, 900), Phaser.Math.Between(0, 400),
+        Phaser.Math.Between(1, 2), 0xffffff, Phaser.Math.FloatBetween(0.2, 0.6)
+      );
+    }
+
+    // 트랙 라인
+    this.add.rectangle(SIGNAL_TRACK_START_X, SIGNAL_TRACK_Y, SIGNAL_TRACK_LENGTH, 6, 0x0f3460).setOrigin(0, 0.5);
+    this.add.text(SIGNAL_TRACK_START_X, SIGNAL_TRACK_Y - 60, '출발', { fontSize: '16px', color: '#ffe66d', fontStyle: 'bold' }).setOrigin(0.5);
+    this.add.text(SIGNAL_TRACK_END_X, SIGNAL_TRACK_Y - 60, '🏆 골인', { fontSize: '16px', color: '#ffe66d', fontStyle: 'bold' }).setOrigin(0.5);
+    this.add.text(SIGNAL_TRACK_END_X, SIGNAL_TRACK_Y, '🍚', { fontSize: '32px' }).setOrigin(0.5);
+
+    // 감시자 캐릭터 (트랙 끝쪽에 위치, 상태에 따라 이모지 변경)
+    this.guard = this.add.text(SIGNAL_TRACK_END_X - 40, SIGNAL_TRACK_Y - 120, '🙈', { fontSize: '48px' }).setOrigin(0.5);
+    this.lightLabel = this.add.text(450, 90, '', { fontSize: '26px', fontStyle: 'bold' }).setOrigin(0.5);
+
+    // 플레이어 캐릭터
+    this.player = this.add.text(SIGNAL_TRACK_START_X, SIGNAL_TRACK_Y, '🧍', { fontSize: '32px' }).setOrigin(0.5);
+
+    // 진행도 바
+    this.add.rectangle(450, 470, 620, 14, 0x333333).setOrigin(0.5).setStrokeStyle(2, 0x555555);
+    this.progressBarFill = this.add.rectangle(140, 470, 4, 10, 0x4ecdc4).setOrigin(0, 0.5);
+
+    this.livesText = this.add.text(20, 20, '❤️'.repeat(this.lives), { fontSize: '22px' });
+    this.timerText = this.add.text(20, 50, '시간: 0.0s', { fontSize: '18px', color: '#ffffff' });
+    this.hintText = this.add.text(450, 520, '초록불(🙈)일 때만 ↑키(또는 버튼)를 누르고 있으세요. 빨간불(😠)에 움직이면 탈락!', {
+      fontSize: '14px', color: '#cccccc'
+    }).setOrigin(0.5);
+
+    this.messageText = this.add.text(450, 220, '', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' })
+      .setOrigin(0.5).setDepth(10);
+
+    this.dangerBorder = this.add.graphics().setDepth(9);
+    this.dangerBorder.lineStyle(10, 0xff0000, 1);
+    this.dangerBorder.strokeRect(5, 5, 890, 550);
+    this.dangerBorder.setVisible(false);
+    this.dangerTween = null;
+
+    // 키보드 입력 (누르고 있는 동안 전진)
+    this.upKey = this.input.keyboard.addKey('UP');
+
+    // 모바일 터치 버튼
+    const btnGo = this.add.rectangle(800, 490, 140, 56, 0x4ecdc4, 0.9).setInteractive();
+    this.add.text(800, 490, '▲ 전진', { fontSize: '18px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+    btnGo.on('pointerdown', () => { this.touchHold = true; });
+    btnGo.on('pointerup', () => { this.touchHold = false; });
+    btnGo.on('pointerout', () => { this.touchHold = false; });
+    this.touchHold = false;
+
+    this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.2, 2.2));
+  }
+
+  setNextLightPhase(state, durationSec) {
+    this.lightState = state;
+    this.lightTimer = durationSec;
+    if (state === 'green') {
+      this.guard.setText('🙈');
+      this.lightLabel.setText('🟢 GO');
+      this.lightLabel.setColor('#4ecdc4');
+    } else {
+      this.guard.setText('😠');
+      this.lightLabel.setText('🔴 STOP');
+      this.lightLabel.setColor('#ff6b6b');
+      SFX.click();
+    }
+  }
+
+  update(time, delta) {
+    if (this.gameOver) return;
+
+    const dt = delta / 1000;
+    const elapsed = (this.time.now - this.startTime) / 1000;
+    this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
+
+    // 신호 타이머 갱신
+    this.lightTimer -= dt;
+    if (this.lightTimer <= 0) {
+      if (this.lightState === 'green') {
+        this.setNextLightPhase('red', Phaser.Math.FloatBetween(1.2, 2.8));
+      } else {
+        this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.4, 3.2));
+      }
+    }
+
+    this.isMoving = this.upKey.isDown || this.touchHold;
+
+    if (this.isMoving && this.lightState === 'red') {
+      this.onCaught();
+      return;
+    }
+
+    if (this.isMoving && this.lightState === 'green') {
+      this.progress = Math.min(SIGNAL_TRACK_LENGTH, this.progress + SIGNAL_SPEED * dt);
+      this.player.x = SIGNAL_TRACK_START_X + this.progress;
+      this.progressBarFill.width = Math.max(4, (this.progress / SIGNAL_TRACK_LENGTH) * 620);
+
+      if (this.progress >= SIGNAL_TRACK_LENGTH) {
+        this.finishGame(true);
+      }
+    }
+  }
+
+  onCaught() {
+    SFX.fall();
+    this.shakeCamera();
+    this.showFloatText(this.player.x, this.player.y - 30, '걸렸다!', '#ff4757');
+    logSignalDeath(this.progress / SIGNAL_TRACK_LENGTH);
+
+    this.lives--;
+    this.livesText.setText('❤️'.repeat(Math.max(this.lives, 0)));
+    this.updateDangerBorder();
+
+    if (this.lives <= 0) {
+      this.finishGame(false);
+      return;
+    }
+
+    // 리스폰: 처음으로
+    this.progress = 0;
+    this.player.x = SIGNAL_TRACK_START_X;
+    this.progressBarFill.width = 4;
+    this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.2, 2.2));
+  }
+
+  shakeCamera() { this.cameras.main.shake(180, 0.01); }
+
+  updateDangerBorder() {
+    if (this.lives === 1) {
+      this.dangerBorder.setVisible(true);
+      if (!this.dangerTween) {
+        this.dangerTween = this.tweens.add({
+          targets: this.dangerBorder, alpha: { from: 1, to: 0.15 }, duration: 500, yoyo: true, repeat: -1
+        });
+      }
+    } else {
+      this.dangerBorder.setVisible(false);
+      if (this.dangerTween) {
+        this.dangerTween.stop();
+        this.dangerTween = null;
+        this.dangerBorder.setAlpha(1);
+      }
+    }
+  }
+
+  showFloatText(x, y, msg, color) {
+    const t = this.add.text(x, y, msg, { fontSize: '20px', color: color, fontStyle: 'bold' }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 700, onComplete: () => t.destroy() });
+  }
+
+  finishGame(success) {
+    this.gameOver = true;
+    if (this.dangerTween) {
+      this.dangerTween.stop();
+      this.dangerTween = null;
+      this.dangerBorder.setVisible(false);
+    }
+    const finalTime = parseFloat(((this.time.now - this.startTime) / 1000).toFixed(1));
+
+    if (success) {
+      SFX.clear();
+      this.messageText.setText('🎉 클리어! 🎉').setColor('#4ecdc4');
+      this.showFloatText(450, 260, `기록: ${finalTime}초`, '#ffe66d');
+      logSignalClear();
+    } else {
+      SFX.gameover();
+      this.messageText.setText('💀 목숨 소진 💀').setColor('#ff6b6b');
+    }
+
+    const restartBtn = this.add.rectangle(450, 320, 160, 46, 0xffe66d).setInteractive({ useHandCursor: true });
+    this.add.text(450, 320, '다시 도전', { fontSize: '18px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    restartBtn.on('pointerover', () => restartBtn.setFillStyle(0xfff3a0));
+    restartBtn.on('pointerout', () => restartBtn.setFillStyle(0xffe66d));
+    restartBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
+
+    if (success) {
+      const rankBtn = this.add.rectangle(450, 376, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 376, '🏆 기록 등록 / 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showSubmitView(finalTime, 'scores_signal'); });
+    } else {
+      const rankBtn = this.add.rectangle(450, 376, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 376, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView('scores_signal'); });
+    }
+
+    const titleBtn = this.add.rectangle(450, 424, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
+    this.add.text(450, 424, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
+  }
+}
+
 const config = {
   type: Phaser.AUTO,
   width: 900,
@@ -915,7 +1176,7 @@ const config = {
   parent: 'game-container',
   backgroundColor: '#1a1a2e',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [HubScene, MainScene]
+  scene: [HubScene, MainScene, SignalScene]
 };
 
 new Phaser.Game(config);
