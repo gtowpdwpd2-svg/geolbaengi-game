@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>걸뱅이 게임 - 개똥 다리건너기</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0d0d1a;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Trebuchet MS', sans-serif;
+    overflow: hidden;
+  }
+  #game-container {
+    position: relative;
+    box-shadow: 0 0 50px rgba(255, 200, 0, 0.12);
+    border-radius: 8px;
+    overflow: hidden;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
+  .lb-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+  }
+  .hidden { display: none !important; }
+  .lb-panel {
+    background: #2b2140;
+    border: 2px solid #ffe66d;
+    border-radius: 12px;
+    padding: 24px 28px;
+    width: 260px;
+    text-align: center;
+    color: #fff;
+  }
+  .lb-panel h3 { margin: 0 0 10px; color: #ffe66d; font-size: 18px; }
+  .lb-panel p { margin: 4px 0; font-size: 14px; color: #cccccc; }
+  .lb-panel input {
+    width: 100%;
+    padding: 8px;
+    margin: 10px 0 4px;
+    border-radius: 6px;
+    border: none;
+    box-sizing: border-box;
+    font-size: 15px;
+  }
+  .lb-panel button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 8px;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  #lb-submit-btn { background: #4ecdc4; color: #003333; }
+  #lb-skip-btn, #lb-close-btn { background: #666; color: #fff; }
+  #lb-status { min-height: 18px; font-size: 12px; color: #ffe66d; margin-top: 6px; }
+  #lb-rank-list {
+    list-style: decimal inside;
+    text-align: left;
+    padding: 0;
+    margin: 12px 0;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  #lb-rank-list li {
+    padding: 5px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    font-size: 14px;
+  }
+  .lb-me { color: #ffe66d; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="game-container">
+  <div id="leaderboard-overlay" class="lb-overlay hidden">
+    <div class="lb-panel">
+      <div id="lb-submit-view">
+        <h3>🎉 기록 등록하기</h3>
+        <p id="lb-time-display"></p>
+        <input id="lb-nickname" maxlength="10" placeholder="닉네임 (한글/영문/숫자, 10자 이내)">
+        <button id="lb-submit-btn">등록하기</button>
+        <button id="lb-skip-btn">건너뛰고 랭킹만 보기</button>
+        <div id="lb-status"></div>
+      </div>
+      <div id="lb-rank-view" class="hidden">
+        <h3>🏆 TOP 10 랭킹</h3>
+        <ol id="lb-rank-list"></ol>
+        <button id="lb-close-btn">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+
+/* ===================== Firebase 초기화 ===================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyC0_uGNgi7q8lJriEVU77CbQW2n1SPoaJY",
+  authDomain: "beggargame-57ac2.firebaseapp.com",
+  projectId: "beggargame-57ac2",
+  storageBucket: "beggargame-57ac2.firebasestorage.app",
+  messagingSenderId: "1037587961266",
+  appId: "1:1037587961266:web:da117bc4f387fea3ae00ab",
+  measurementId: "G-3HGV8G6TQQ"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+let currentUid = null;
+
+auth.signInAnonymously().catch((err) => {
+  console.error('익명 로그인 실패:', err);
+});
+auth.onAuthStateChanged((user) => {
+  if (user) currentUid = user.uid;
+});
+
+/* ===================== 랭킹판 로직 =====================
+   구조: scores 컬렉션, 문서 ID = 유저의 익명 uid.
+   -> 유저 1명당 기록 1개만 존재하고, 더 빠른 기록일 때만 갱신 가능.
+   -> 이 구조 자체가 "같은 계정으로 점수 도배"를 원천 차단합니다.
+   실제 배포 시 Firestore 콘솔 > 규칙 탭에 아래 규칙을 꼭 붙여넣어 주세요:
+
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /scores/{uid} {
+         allow read: if true;
+         allow create: if request.auth != null
+                       && request.auth.uid == uid
+                       && request.resource.data.time is number
+                       && request.resource.data.time >= 3
+                       && request.resource.data.time <= 300
+                       && request.resource.data.nickname is string
+                       && request.resource.data.nickname.size() > 0
+                       && request.resource.data.nickname.size() <= 10;
+         allow update: if request.auth != null
+                       && request.auth.uid == uid
+                       && request.resource.data.time is number
+                       && request.resource.data.time >= 3
+                       && request.resource.data.time <= 300
+                       && request.resource.data.time < resource.data.time
+                       && request.resource.data.nickname is string
+                       && request.resource.data.nickname.size() > 0
+                       && request.resource.data.nickname.size() <= 10;
+         allow delete: if false;
+       }
+     }
+   }
+*/
+
+// 닉네임 형식 검증 (한글/영문/숫자만 허용, 1~10자)
+// 참고: 이건 형식 검증일 뿐 비속어 필터는 아닙니다.
+// 실제 서비스 단계에서는 별도의 비속어 필터 라이브러리나 서버 검수를 추가하는 걸 권장합니다.
+const NICKNAME_PATTERN = /^[가-힣a-zA-Z0-9\s]{1,10}$/;
+function isValidNickname(name) {
+  return NICKNAME_PATTERN.test(name.trim());
+}
+
+function showSubmitView(finalTime) {
+  document.getElementById('lb-time-display').textContent = `이번 기록: ${finalTime}초`;
+  document.getElementById('lb-submit-view').classList.remove('hidden');
+  document.getElementById('lb-rank-view').classList.add('hidden');
+  document.getElementById('leaderboard-overlay').classList.remove('hidden');
+  document.getElementById('lb-status').textContent = '';
+  document.getElementById('lb-nickname').value = '';
+  document.getElementById('lb-submit-btn').onclick = () => submitScore(finalTime);
+  document.getElementById('lb-nickname').focus();
+}
+
+function showRankOnlyView() {
+  document.getElementById('lb-submit-view').classList.add('hidden');
+  document.getElementById('lb-rank-view').classList.remove('hidden');
+  document.getElementById('leaderboard-overlay').classList.remove('hidden');
+  loadLeaderboard();
+}
+
+function hideLeaderboardOverlay() {
+  document.getElementById('leaderboard-overlay').classList.add('hidden');
+}
+
+async function submitScore(finalTime) {
+  const nicknameInput = document.getElementById('lb-nickname');
+  const status = document.getElementById('lb-status');
+  const nickname = nicknameInput.value.trim();
+  const submitBtn = document.getElementById('lb-submit-btn');
+
+  if (!currentUid) {
+    status.textContent = '로그인 준비 중입니다. 잠시 후 다시 시도해주세요.';
+    return;
+  }
+  if (!nickname) {
+    status.textContent = '닉네임을 입력해주세요.';
+    return;
+  }
+  if (!isValidNickname(nickname)) {
+    status.textContent = '닉네임은 한글/영문/숫자 10자 이내로 입력해주세요.';
+    return;
+  }
+
+  status.textContent = '등록 중...';
+  submitBtn.disabled = true;
+
+  try {
+    const docRef = db.collection('scores').doc(currentUid);
+    const doc = await docRef.get();
+
+    if (!doc.exists || finalTime < doc.data().time) {
+      await docRef.set({
+        nickname: nickname,
+        time: finalTime,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      status.textContent = '등록 완료!';
+    } else {
+      status.textContent = `이미 더 좋은 기록(${doc.data().time}초)이 있어요!`;
+    }
+    setTimeout(() => showRankOnlyView(), 600);
+  } catch (err) {
+    console.error(err);
+    status.textContent = '등록에 실패했습니다. 잠시 후 다시 시도해주세요.';
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+async function loadLeaderboard() {
+  const list = document.getElementById('lb-rank-list');
+  list.innerHTML = '<li>불러오는 중...</li>';
+  try {
+    const snapshot = await db.collection('scores').orderBy('time').limit(10).get();
+    if (snapshot.empty) {
+      list.innerHTML = '<li>아직 등록된 기록이 없습니다.</li>';
+      return;
+    }
+    list.innerHTML = '';
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const li = document.createElement('li');
+      li.textContent = `${data.nickname} - ${data.time}초`;
+      if (doc.id === currentUid) li.classList.add('lb-me');
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = '<li>랭킹을 불러오지 못했습니다.</li>';
+  }
+}
+
+document.getElementById('lb-skip-btn').addEventListener('click', () => showRankOnlyView());
+document.getElementById('lb-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
+
+/* ===================== 사운드 매니저 (Web Audio API로 직접 합성) ===================== */
+class SoundManager {
+  constructor() { this.ctx = null; }
+  ensure() {
+    if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
+  tone(freq, duration, type, gainVal, delay) {
+    this.ensure();
+    const t0 = this.ctx.currentTime + (delay || 0);
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(gainVal || 0.15, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + duration);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + duration);
+  }
+  jump() { this.tone(420, 0.1, 'square', 0.08); }
+  land() { this.tone(520, 0.08, 'sine', 0.12); }
+  fall() {
+    this.ensure();
+    const t0 = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(300, t0);
+    osc.frequency.exponentialRampToValueAtTime(60, t0 + 0.45);
+    gain.gain.setValueAtTime(0.15, t0);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.45);
+    osc.connect(gain).connect(this.ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.45);
+  }
+  clear() {
+    this.tone(523, 0.12, 'triangle', 0.12, 0);
+    this.tone(659, 0.12, 'triangle', 0.12, 0.1);
+    this.tone(784, 0.2, 'triangle', 0.14, 0.2);
+  }
+  gameover() {
+    this.tone(300, 0.15, 'sawtooth', 0.1, 0);
+    this.tone(220, 0.15, 'sawtooth', 0.1, 0.12);
+    this.tone(150, 0.3, 'sawtooth', 0.12, 0.24);
+  }
+  click() { this.tone(700, 0.05, 'square', 0.06); }
+}
+const SFX = new SoundManager();
+
+/* ===================== 상수 ===================== */
+const STAGE_COUNT = 10;
+const STAGE_WIDTH = 90;
+const START_X = 130;
+const TOP_Y = 230;
+const BOT_Y = 330;
+const GROUND_Y = 480;
+
+let safeArray = [];
+function generateSafeArray() {
+  safeArray = [];
+  for (let i = 0; i < STAGE_COUNT; i++) {
+    let next;
+    if (safeArray.length >= 2 && safeArray[i - 1] === safeArray[i - 2]) {
+      next = 1 - safeArray[i - 1];
+    } else {
+      next = Math.random() < 0.5 ? 0 : 1;
+    }
+    safeArray.push(next);
+  }
+}
+
+/* ===================== 타이틀 씬 ===================== */
+class TitleScene extends Phaser.Scene {
+  constructor() { super('TitleScene'); }
+  create() {
+    hideLeaderboardOverlay();
+    this.add.rectangle(0, 0, 900, 560, 0x1a1a2e).setOrigin(0);
+    for (let i = 0; i < 50; i++) {
+      this.add.circle(
+        Phaser.Math.Between(0, 900), Phaser.Math.Between(0, 560),
+        Phaser.Math.Between(1, 2), 0xffffff, Phaser.Math.FloatBetween(0.2, 0.6)
+      );
+    }
+
+    const title = this.add.text(450, 190, '💩 걸뱅이 게임', {
+      fontSize: '52px', color: '#ffe66d', fontStyle: 'bold'
+    }).setOrigin(0.5);
+    this.tweens.add({ targets: title, y: 180, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+
+    this.add.text(450, 250, '개똥 다리건너기', { fontSize: '26px', color: '#ffffff' }).setOrigin(0.5);
+    this.add.text(450, 320, '길을 외워서 무사히 건너라!\n한 번 밟은 개똥 발판은 표시가 남는다.', {
+      fontSize: '16px', color: '#cccccc', align: 'center', lineSpacing: 6
+    }).setOrigin(0.5);
+
+    const startBtn = this.add.rectangle(450, 400, 200, 56, 0xffe66d).setInteractive({ useHandCursor: true });
+    this.add.text(450, 400, '▶ 시작하기', { fontSize: '22px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    startBtn.on('pointerover', () => startBtn.setFillStyle(0xfff3a0));
+    startBtn.on('pointerout', () => startBtn.setFillStyle(0xffe66d));
+    startBtn.on('pointerdown', () => {
+      SFX.click();
+      this.cameras.main.fadeOut(200, 0, 0, 0);
+      this.time.delayedCall(200, () => this.scene.start('MainScene'));
+    });
+    this.input.keyboard.once('keydown-SPACE', () => {
+      SFX.click();
+      this.cameras.main.fadeOut(200, 0, 0, 0);
+      this.time.delayedCall(200, () => this.scene.start('MainScene'));
+    });
+
+    const rankBtn = this.add.rectangle(450, 465, 200, 44, 0x4ecdc4).setInteractive({ useHandCursor: true });
+    this.add.text(450, 465, '🏆 랭킹보기', { fontSize: '17px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+    rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView(); });
+
+    this.add.text(450, 515, '조작: ↑ / ↓ 방향키 (또는 화면 버튼)', { fontSize: '14px', color: '#888888' }).setOrigin(0.5);
+  }
+}
+
+/* ===================== 메인 게임 씬 ===================== */
+class MainScene extends Phaser.Scene {
+  constructor() { super('MainScene'); }
+
+  init() {
+    this.currentStage = 0;
+    this.lives = 3;
+    this.startTime = 0;
+    this.isJumping = false;
+    this.gameOver = false;
+    this.brokenPlatforms = new Set();
+  }
+
+  create() {
+    hideLeaderboardOverlay();
+    generateSafeArray();
+    this.startTime = this.time.now;
+    this.cameras.main.fadeIn(200, 0, 0, 0);
+
+    this.add.rectangle(0, 0, 900, 560, 0x2b2140).setOrigin(0);
+    for (let i = 0; i < 40; i++) {
+      this.add.circle(
+        Phaser.Math.Between(0, 900), Phaser.Math.Between(0, 400),
+        Phaser.Math.Between(1, 2), 0xffffff, Phaser.Math.FloatBetween(0.2, 0.6)
+      );
+    }
+
+    this.add.rectangle(0, GROUND_Y, 900, 80, 0x0f3460).setOrigin(0);
+    this.add.rectangle(0, GROUND_Y, 900, 6, 0x16537e).setOrigin(0);
+
+    this.add.rectangle(0, TOP_Y - 40, START_X, 260, 0x4a3b6b).setOrigin(0);
+    this.add.text(START_X / 2, 40, '출발', { fontSize: '18px', color: '#ffe66d', fontStyle: 'bold' }).setOrigin(0.5);
+
+    const finishX = START_X + STAGE_COUNT * STAGE_WIDTH;
+    this.add.rectangle(finishX, TOP_Y - 40, 900 - finishX, 260, 0x4a3b6b).setOrigin(0);
+    this.add.text(finishX + (900 - finishX) / 2, 40, '🏆 골인', { fontSize: '18px', color: '#ffe66d', fontStyle: 'bold' }).setOrigin(0.5);
+    this.add.text(finishX + (900 - finishX) / 2, 150, '🍚', { fontSize: '40px' }).setOrigin(0.5);
+
+    this.platformGraphics = this.add.graphics();
+    this.platformMarks = this.add.container();
+    this.drawPlatforms();
+
+    this.player = this.add.text(START_X / 2, TOP_Y + (BOT_Y - TOP_Y) / 2, '🧍', { fontSize: '36px' }).setOrigin(0.5);
+    this.playerBaseY = this.player.y;
+
+    this.livesText = this.add.text(20, 20, '❤️'.repeat(this.lives), { fontSize: '22px' });
+    this.stageText = this.add.text(20, 50, `단계: ${this.currentStage} / ${STAGE_COUNT}`, { fontSize: '18px', color: '#ffffff' });
+    this.timerText = this.add.text(20, 78, '시간: 0.0s', { fontSize: '18px', color: '#ffffff' });
+    this.hintText = this.add.text(450, 520, '↑ / ↓ 방향키로 다음 발판 선택!', { fontSize: '16px', color: '#cccccc' }).setOrigin(0.5);
+
+    this.messageText = this.add.text(450, 280, '', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' })
+      .setOrigin(0.5).setDepth(10);
+
+    this.dangerBorder = this.add.graphics().setDepth(9);
+    this.dangerBorder.lineStyle(10, 0xff0000, 1);
+    this.dangerBorder.strokeRect(5, 5, 890, 550);
+    this.dangerBorder.setVisible(false);
+    this.dangerTween = null;
+
+    this.input.keyboard.on('keydown-UP', () => this.tryJump(0));
+    this.input.keyboard.on('keydown-DOWN', () => this.tryJump(1));
+
+    this.createTouchButtons();
+  }
+
+  drawPlatforms() {
+    this.platformGraphics.clear();
+    this.platformMarks.removeAll(true);
+    for (let i = 0; i < STAGE_COUNT; i++) {
+      const x = START_X + i * STAGE_WIDTH + STAGE_WIDTH / 2;
+      const topBroken = this.brokenPlatforms.has(`${i}-0`);
+      this.platformGraphics.fillStyle(topBroken ? 0x5a3a2a : 0x8d6e63, 1);
+      this.platformGraphics.fillRoundedRect(x - 32, TOP_Y - 22, 64, 44, 8);
+      this.platformGraphics.lineStyle(3, 0x4e342e, 1);
+      this.platformGraphics.strokeRoundedRect(x - 32, TOP_Y - 22, 64, 44, 8);
+
+      const botBroken = this.brokenPlatforms.has(`${i}-1`);
+      this.platformGraphics.fillStyle(botBroken ? 0x5a3a2a : 0x8d6e63, 1);
+      this.platformGraphics.fillRoundedRect(x - 32, BOT_Y - 22, 64, 44, 8);
+      this.platformGraphics.lineStyle(3, 0x4e342e, 1);
+      this.platformGraphics.strokeRoundedRect(x - 32, BOT_Y - 22, 64, 44, 8);
+
+      if (topBroken) this.platformMarks.add(this.add.text(x, TOP_Y, '💩', { fontSize: '22px' }).setOrigin(0.5));
+      if (botBroken) this.platformMarks.add(this.add.text(x, BOT_Y, '💩', { fontSize: '22px' }).setOrigin(0.5));
+    }
+  }
+
+  createTouchButtons() {
+    const btnUp = this.add.rectangle(800, 460, 80, 50, 0x4ecdc4, 0.9).setInteractive();
+    this.add.text(800, 460, '▲ 위', { fontSize: '16px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+    btnUp.on('pointerdown', () => this.tryJump(0));
+
+    const btnDown = this.add.rectangle(800, 520, 80, 50, 0xff6b6b, 0.9).setInteractive();
+    this.add.text(800, 520, '▼ 아래', { fontSize: '16px', color: '#330000', fontStyle: 'bold' }).setOrigin(0.5);
+    btnDown.on('pointerdown', () => this.tryJump(1));
+  }
+
+  tryJump(side) {
+    if (this.isJumping || this.gameOver) return;
+    if (this.currentStage >= STAGE_COUNT) return;
+    SFX.jump();
+    this.isJumping = true;
+    const stageIdx = this.currentStage;
+    const targetX = START_X + stageIdx * STAGE_WIDTH + STAGE_WIDTH / 2;
+    const targetY = side === 0 ? TOP_Y : BOT_Y;
+    const isSafe = safeArray[stageIdx] === side;
+
+    this.tweens.add({
+      targets: this.player, x: targetX, y: targetY - 30, duration: 220, ease: 'Quad.easeOut',
+      onComplete: () => {
+        if (isSafe) this.onSafeLand(targetX, targetY, stageIdx);
+        else this.onFall(targetX, targetY, stageIdx, side);
+      }
+    });
+  }
+
+  onSafeLand(x, y, stageIdx) {
+    this.tweens.add({
+      targets: this.player, y: y, duration: 100, ease: 'Bounce.easeOut',
+      onComplete: () => {
+        SFX.land();
+        this.burstParticles(x, y, 0x4ecdc4, 8);
+        this.isJumping = false;
+        this.currentStage++;
+        this.stageText.setText(`단계: ${this.currentStage} / ${STAGE_COUNT}`);
+        if (this.currentStage >= STAGE_COUNT) this.finishGame(true);
+      }
+    });
+  }
+
+  onFall(x, y, stageIdx, side) {
+    SFX.fall();
+    this.brokenPlatforms.add(`${stageIdx}-${side}`);
+    this.drawPlatforms();
+    this.burstParticles(x, y, 0x8b5a2b, 10);
+    this.shakeCamera();
+    this.showFloatText(x, y - 20, '으아아악-', '#ff4757');
+
+    this.tweens.add({
+      targets: this.player, y: GROUND_Y + 60, angle: 360, duration: 500, ease: 'Quad.easeIn',
+      onComplete: () => {
+        this.lives--;
+        this.livesText.setText('❤️'.repeat(Math.max(this.lives, 0)));
+        this.updateDangerBorder();
+        if (this.lives <= 0) { this.finishGame(false); return; }
+        this.respawn();
+      }
+    });
+  }
+
+  respawn() {
+    const respawnStage = this.currentStage;
+    let respawnX, respawnY;
+    if (respawnStage === 0) {
+      respawnX = START_X / 2;
+      respawnY = this.playerBaseY;
+    } else {
+      respawnX = START_X + (respawnStage - 1) * STAGE_WIDTH + STAGE_WIDTH / 2;
+      respawnY = safeArray[respawnStage - 1] === 0 ? TOP_Y : BOT_Y;
+    }
+    this.player.setAngle(0);
+    this.player.setPosition(respawnX, respawnY - 200);
+    this.player.setAlpha(0.6);
+    this.tweens.add({
+      targets: this.player, y: respawnY, alpha: 1, duration: 300, ease: 'Bounce.easeOut',
+      onComplete: () => { this.isJumping = false; }
+    });
+  }
+
+  shakeCamera() { this.cameras.main.shake(180, 0.01); }
+
+  updateDangerBorder() {
+    if (this.lives === 1) {
+      this.dangerBorder.setVisible(true);
+      if (!this.dangerTween) {
+        this.dangerTween = this.tweens.add({
+          targets: this.dangerBorder, alpha: { from: 1, to: 0.15 }, duration: 500, yoyo: true, repeat: -1
+        });
+      }
+    } else {
+      this.dangerBorder.setVisible(false);
+      if (this.dangerTween) {
+        this.dangerTween.stop();
+        this.dangerTween = null;
+        this.dangerBorder.setAlpha(1);
+      }
+    }
+  }
+
+  burstParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+      const p = this.add.circle(x, y, Phaser.Math.Between(2, 4), color);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.Between(20, 50);
+      this.tweens.add({
+        targets: p, x: x + Math.cos(angle) * dist, y: y + Math.sin(angle) * dist, alpha: 0,
+        duration: 400, ease: 'Quad.easeOut', onComplete: () => p.destroy()
+      });
+    }
+  }
+
+  showFloatText(x, y, msg, color) {
+    const t = this.add.text(x, y, msg, { fontSize: '20px', color: color, fontStyle: 'bold' }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 700, onComplete: () => t.destroy() });
+  }
+
+  finishGame(success) {
+    this.gameOver = true;
+    if (this.dangerTween) {
+      this.dangerTween.stop();
+      this.dangerTween = null;
+      this.dangerBorder.setVisible(false);
+    }
+    const finalTime = parseFloat(((this.time.now - this.startTime) / 1000).toFixed(1));
+
+    if (success) {
+      SFX.clear();
+      this.messageText.setText('🎉 클리어! 🎉').setColor('#4ecdc4');
+      this.showFloatText(450, 340, `기록: ${finalTime}초`, '#ffe66d');
+    } else {
+      SFX.gameover();
+      this.messageText.setText('💀 목숨 소진 💀').setColor('#ff6b6b');
+    }
+
+    const restartBtn = this.add.rectangle(450, 400, 160, 46, 0xffe66d).setInteractive({ useHandCursor: true });
+    this.add.text(450, 400, '다시 도전', { fontSize: '18px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    restartBtn.on('pointerover', () => restartBtn.setFillStyle(0xfff3a0));
+    restartBtn.on('pointerout', () => restartBtn.setFillStyle(0xffe66d));
+    restartBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
+
+    if (success) {
+      const rankBtn = this.add.rectangle(450, 456, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 456, '🏆 기록 등록 / 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showSubmitView(finalTime); });
+    } else {
+      const rankBtn = this.add.rectangle(450, 456, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 456, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView(); });
+    }
+
+    const titleBtn = this.add.rectangle(450, 504, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
+    this.add.text(450, 504, '타이틀로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('TitleScene'); });
+
+    this.input.keyboard.once('keydown-SPACE', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
+  }
+
+  update() {
+    if (!this.gameOver) {
+      const elapsed = (this.time.now - this.startTime) / 1000;
+      this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
+    }
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  width: 900,
+  height: 560,
+  parent: 'game-container',
+  backgroundColor: '#1a1a2e',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [TitleScene, MainScene]
+};
+
+new Phaser.Game(config);
+</script>
+</body>
+</html>
