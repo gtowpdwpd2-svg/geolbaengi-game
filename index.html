@@ -845,7 +845,7 @@ class MainScene extends Phaser.Scene {
   create() {
     hideLeaderboardOverlay();
     generateSafeArray();
-    this.startTime = this.time.now;
+    this.startTime = Date.now(); // Phaser 내부 시계 대신 브라우저 시계 사용 (씬 전환/탭 전환에 영향받지 않도록)
     this.cameras.main.fadeIn(200, 0, 0, 0);
     logGameStart();
 
@@ -1044,7 +1044,7 @@ class MainScene extends Phaser.Scene {
       this.dangerTween = null;
       this.dangerBorder.setVisible(false);
     }
-    const finalTime = parseFloat(((this.time.now - this.startTime) / 1000).toFixed(1));
+    const finalTime = parseFloat(((Date.now() - this.startTime) / 1000).toFixed(1));
 
     if (success) {
       SFX.clear();
@@ -1098,7 +1098,7 @@ class MainScene extends Phaser.Scene {
 
   update() {
     if (!this.gameOver) {
-      const elapsed = (this.time.now - this.startTime) / 1000;
+      const elapsed = (Date.now() - this.startTime) / 1000;
       this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
     }
   }
@@ -1137,7 +1137,7 @@ class SignalScene extends Phaser.Scene {
 
   create() {
     hideLeaderboardOverlay();
-    this.startTime = this.time.now;
+    this.startTime = Date.now(); // Phaser 내부 시계 대신 브라우저 시계 사용 (씬 전환/탭 전환에 영향받지 않도록)
     this.cameras.main.fadeIn(200, 0, 0, 0);
     logSignalStart();
 
@@ -1215,7 +1215,7 @@ class SignalScene extends Phaser.Scene {
     if (this.gameOver) return;
 
     const dt = delta / 1000;
-    const elapsed = (this.time.now - this.startTime) / 1000;
+    const elapsed = (Date.now() - this.startTime) / 1000;
     this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
 
     // 신호 타이머 갱신
@@ -1302,7 +1302,7 @@ class SignalScene extends Phaser.Scene {
       this.dangerTween = null;
       this.dangerBorder.setVisible(false);
     }
-    const finalTime = parseFloat(((this.time.now - this.startTime) / 1000).toFixed(1));
+    const finalTime = parseFloat(((Date.now() - this.startTime) / 1000).toFixed(1));
 
     if (success) {
       SFX.clear();
