@@ -512,9 +512,30 @@ function generateSafeArray() {
   }
 }
 
-/* ===================== 타이틀 씬 ===================== */
-class TitleScene extends Phaser.Scene {
-  constructor() { super('TitleScene'); }
+/* ===================== 허브(로비) 씬 - 세로 스크롤 게임 리스트 ===================== */
+// 게임이 늘어나도 이 배열에 항목만 추가하면 카드가 자동으로 생깁니다.
+const GAME_LIST = [
+  {
+    key: 'bridge',
+    emoji: '🌉',
+    title: '개똥 다리건너기',
+    desc: '10단계 발판을 외워서 무사히 건너라!',
+    enabled: true,
+    sceneKey: 'MainScene'
+  },
+  {
+    key: 'signal',
+    emoji: '🚦',
+    title: '눈치 신호등 게임',
+    desc: '준비중입니다 (Coming Soon)',
+    enabled: false,
+    sceneKey: null
+  }
+];
+
+class HubScene extends Phaser.Scene {
+  constructor() { super('HubScene'); }
+
   create() {
     hideLeaderboardOverlay();
     this.add.rectangle(0, 0, 900, 560, 0x1a1a2e).setOrigin(0);
@@ -525,41 +546,107 @@ class TitleScene extends Phaser.Scene {
       );
     }
 
-    const title = this.add.text(450, 190, '💩 걸뱅이 게임', {
-      fontSize: '52px', color: '#ffe66d', fontStyle: 'bold'
+    // 헤더
+    const title = this.add.text(450, 36, '💩 걸뱅이 게임', {
+      fontSize: '32px', color: '#ffe66d', fontStyle: 'bold'
     }).setOrigin(0.5);
-    this.tweens.add({ targets: title, y: 180, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.tweens.add({ targets: title, y: 32, duration: 900, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' });
+    this.add.text(450, 68, '플레이할 미니게임을 골라보세요', { fontSize: '14px', color: '#cccccc' }).setOrigin(0.5);
 
-    this.add.text(450, 250, '개똥 다리건너기', { fontSize: '26px', color: '#ffffff' }).setOrigin(0.5);
-    this.add.text(450, 320, '길을 외워서 무사히 건너라!\n한 번 밟은 개똥 발판은 표시가 남는다.', {
-      fontSize: '16px', color: '#cccccc', align: 'center', lineSpacing: 6
-    }).setOrigin(0.5);
+    // 리스트 뷰포트 영역 (y: 90 ~ 465)
+    const viewTop = 90;
+    const viewBottom = 465;
+    const viewHeight = viewBottom - viewTop;
+    const cardWidth = 700;
+    const cardHeight = 130;
+    const cardGap = 20;
 
-    const startBtn = this.add.rectangle(450, 400, 200, 56, 0xffe66d).setInteractive({ useHandCursor: true });
-    this.add.text(450, 400, '▶ 시작하기', { fontSize: '22px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
-    startBtn.on('pointerover', () => startBtn.setFillStyle(0xfff3a0));
-    startBtn.on('pointerout', () => startBtn.setFillStyle(0xffe66d));
-    startBtn.on('pointerdown', () => {
-      SFX.click();
-      this.cameras.main.fadeOut(200, 0, 0, 0);
-      this.time.delayedCall(200, () => this.scene.start('MainScene'));
+    const listContainer = this.add.container(450, viewTop);
+
+    GAME_LIST.forEach((game, i) => {
+      const cardY = i * (cardHeight + cardGap) + cardHeight / 2;
+      const card = this.add.rectangle(0, cardY, cardWidth, cardHeight,
+        game.enabled ? 0x2b2140 : 0x2a2a35, 1
+      ).setStrokeStyle(2, game.enabled ? 0xffe66d : 0x555555);
+      listContainer.add(card);
+
+      const emoji = this.add.text(-cardWidth / 2 + 55, cardY, game.emoji, { fontSize: '40px' })
+        .setOrigin(0.5).setAlpha(game.enabled ? 1 : 0.4);
+      listContainer.add(emoji);
+
+      const gTitle = this.add.text(-cardWidth / 2 + 100, cardY - 22, game.title, {
+        fontSize: '19px', color: game.enabled ? '#ffffff' : '#888888', fontStyle: 'bold'
+      }).setOrigin(0, 0.5);
+      listContainer.add(gTitle);
+
+      const gDesc = this.add.text(-cardWidth / 2 + 100, cardY + 8, game.desc, {
+        fontSize: '13px', color: game.enabled ? '#cccccc' : '#666666', wordWrap: { width: 380 }
+      }).setOrigin(0, 0.5);
+      listContainer.add(gDesc);
+
+      if (game.enabled) {
+        const playBtn = this.add.rectangle(cardWidth / 2 - 60, cardY, 90, 40, 0xffe66d)
+          .setInteractive({ useHandCursor: true });
+        const playLabel = this.add.text(cardWidth / 2 - 60, cardY, '▶ 플레이', {
+          fontSize: '13px', color: '#333', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        listContainer.add(playBtn);
+        listContainer.add(playLabel);
+
+        playBtn.on('pointerdown', (pointer, lx, ly, event) => {
+          if (this.hasDragged) return;
+          event.stopPropagation();
+          SFX.click();
+          this.cameras.main.fadeOut(200, 0, 0, 0);
+          this.time.delayedCall(200, () => this.scene.start(game.sceneKey));
+        });
+      } else {
+        const soonLabel = this.add.text(cardWidth / 2 - 60, cardY, '준비중', {
+          fontSize: '13px', color: '#777777', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        listContainer.add(soonLabel);
+      }
     });
-    this.input.keyboard.once('keydown-SPACE', () => {
-      SFX.click();
-      this.cameras.main.fadeOut(200, 0, 0, 0);
-      this.time.delayedCall(200, () => this.scene.start('MainScene'));
+
+    // 리스트 영역만 보이도록 마스크 처리 (뷰포트 밖 카드는 잘려서 안 보임)
+    const maskShape = this.make.graphics();
+    maskShape.fillRect(450 - cardWidth / 2 - 20, viewTop, cardWidth + 40, viewHeight);
+    const mask = maskShape.createGeometryMask();
+    listContainer.setMask(mask);
+
+    // 드래그로 위아래 스크롤 (콘텐츠가 뷰포트보다 길어지면 자동으로 활성화됨)
+    const contentHeight = GAME_LIST.length * (cardHeight + cardGap) - cardGap;
+    const minY = Math.min(viewTop, viewTop + (viewHeight - contentHeight));
+    const maxY = viewTop;
+    this.hasDragged = false;
+    let dragStartPointerY = 0;
+    let dragStartContainerY = 0;
+
+    this.input.on('pointerdown', (pointer) => {
+      this.hasDragged = false;
+      dragStartPointerY = pointer.y;
+      dragStartContainerY = listContainer.y;
+    });
+    this.input.on('pointermove', (pointer) => {
+      if (!pointer.isDown) return;
+      const delta = pointer.y - dragStartPointerY;
+      if (Math.abs(delta) > 6) this.hasDragged = true;
+      if (contentHeight > viewHeight) {
+        listContainer.y = Phaser.Math.Clamp(dragStartContainerY + delta, minY, maxY);
+      }
     });
 
-    const rankBtn = this.add.rectangle(450, 465, 200, 44, 0x4ecdc4).setInteractive({ useHandCursor: true });
-    this.add.text(450, 465, '🏆 랭킹보기', { fontSize: '17px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
-    rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView(); });
+    // 하단 고정 버튼들
+    const rankBtn = this.add.rectangle(340, 505, 190, 42, 0x4ecdc4).setInteractive({ useHandCursor: true });
+    this.add.text(340, 505, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+    rankBtn.on('pointerdown', (pointer, lx, ly, event) => { event.stopPropagation(); SFX.click(); showRankOnlyView(); });
 
-    this.add.text(450, 515, '조작: ↑ / ↓ 방향키 (또는 화면 버튼)', { fontSize: '14px', color: '#888888' }).setOrigin(0.5);
+    this.add.text(450, 540, '조작: ↑ / ↓ 방향키 (또는 화면 버튼)', { fontSize: '13px', color: '#888888' }).setOrigin(0.5);
 
-    // 운영자용 - 눈에 띄지 않게 우측 하단에 작은 통계 링크만 배치
+    // 운영자용 - 눈에 띄지 않게 작은 통계 링크
     const statsLink = this.add.text(880, 545, '📊 통계', { fontSize: '12px', color: '#555555' })
       .setOrigin(1, 1).setInteractive({ useHandCursor: true });
-    statsLink.on('pointerdown', () => { SFX.click(); showStatsView(); });
+    statsLink.on('pointerdown', (pointer, lx, ly, event) => { event.stopPropagation(); SFX.click(); showStatsView(); });
   }
 }
 
@@ -807,8 +894,8 @@ class MainScene extends Phaser.Scene {
     }
 
     const titleBtn = this.add.rectangle(450, 504, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
-    this.add.text(450, 504, '타이틀로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
-    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('TitleScene'); });
+    this.add.text(450, 504, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
 
     this.input.keyboard.once('keydown-SPACE', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
   }
@@ -828,7 +915,7 @@ const config = {
   parent: 'game-container',
   backgroundColor: '#1a1a2e',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [TitleScene, MainScene]
+  scene: [HubScene, MainScene]
 };
 
 new Phaser.Game(config);
