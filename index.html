@@ -100,6 +100,11 @@
         <ol id="lb-rank-list"></ol>
         <button id="lb-close-btn">닫기</button>
       </div>
+      <div id="lb-stats-view" class="hidden">
+        <h3>📊 플레이 데이터</h3>
+        <div id="lb-stats-content" style="text-align:left; font-size:13px; max-height:260px; overflow-y:auto;"></div>
+        <button id="lb-stats-close-btn">닫기</button>
+      </div>
     </div>
   </div>
 </div>
@@ -173,6 +178,7 @@ function showSubmitView(finalTime) {
   document.getElementById('lb-time-display').textContent = `이번 기록: ${finalTime}초`;
   document.getElementById('lb-submit-view').classList.remove('hidden');
   document.getElementById('lb-rank-view').classList.add('hidden');
+  document.getElementById('lb-stats-view').classList.add('hidden');
   document.getElementById('leaderboard-overlay').classList.remove('hidden');
   document.getElementById('lb-status').textContent = '';
   document.getElementById('lb-nickname').value = '';
@@ -183,8 +189,53 @@ function showSubmitView(finalTime) {
 function showRankOnlyView() {
   document.getElementById('lb-submit-view').classList.add('hidden');
   document.getElementById('lb-rank-view').classList.remove('hidden');
+  document.getElementById('lb-stats-view').classList.add('hidden');
   document.getElementById('leaderboard-overlay').classList.remove('hidden');
   loadLeaderboard();
+}
+
+// 운영자용 플레이 데이터 확인 화면 (설문 없이 서버 로그로 확인)
+async function showStatsView() {
+  document.getElementById('lb-submit-view').classList.add('hidden');
+  document.getElementById('lb-rank-view').classList.add('hidden');
+  document.getElementById('lb-stats-view').classList.remove('hidden');
+  document.getElementById('leaderboard-overlay').classList.remove('hidden');
+
+  const content = document.getElementById('lb-stats-content');
+  content.textContent = '불러오는 중...';
+
+  try {
+    const [funnelDoc, deathsDoc] = await Promise.all([
+      db.collection('analytics').doc('funnel').get(),
+      db.collection('analytics').doc('stage_deaths').get()
+    ]);
+
+    const funnel = funnelDoc.exists ? funnelDoc.data() : {};
+    const deaths = deathsDoc.exists ? deathsDoc.data() : {};
+    const starts = funnel.gameStarts || 0;
+    const clears = funnel.gameClears || 0;
+    const clearRate = starts > 0 ? ((clears / starts) * 100).toFixed(1) : '0.0';
+
+    let html = `<p><b>시작 횟수:</b> ${starts}회</p>`;
+    html += `<p><b>클리어 횟수:</b> ${clears}회 (클리어율 ${clearRate}%)</p>`;
+    html += `<p style="margin-top:8px;"><b>단계별 사망 횟수</b></p>`;
+
+    let maxDeaths = 0;
+    for (let i = 0; i < STAGE_COUNT; i++) {
+      maxDeaths = Math.max(maxDeaths, deaths[`stage_${i}`] || 0);
+    }
+
+    for (let i = 0; i < STAGE_COUNT; i++) {
+      const count = deaths[`stage_${i}`] || 0;
+      const isMax = maxDeaths > 0 && count === maxDeaths;
+      html += `<div>${i + 1}단계: ${count}회${isMax ? ' 🔥 (통곡의 벽)' : ''}</div>`;
+    }
+
+    content.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    content.textContent = '데이터를 불러오지 못했습니다.';
+  }
 }
 
 function hideLeaderboardOverlay() {
@@ -261,6 +312,36 @@ async function loadLeaderboard() {
 
 document.getElementById('lb-skip-btn').addEventListener('click', () => showRankOnlyView());
 document.getElementById('lb-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
+document.getElementById('lb-stats-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
+
+/* ===================== 플레이 데이터 자동 로그 (알파테스트 분석용) =====================
+   설문 없이 "몇 단계에서 가장 많이 죽는지", "시작 대비 클리어율"을 서버 데이터로 확인하기 위한 로그.
+   문서 하나에 카운터만 누적시키는 구조라 읽을 때 문서 1개만 조회하면 통계가 바로 나옵니다.
+
+   실제 배포 시 Firestore 콘솔 > 규칙 탭에 아래 규칙도 함께 추가해주세요 (기존 scores 규칙 아래에 이어붙이면 됩니다):
+
+   match /analytics/{docId} {
+     allow read: if true;
+     allow write: if request.auth != null;
+   }
+*/
+function logAnalytics(docId, field) {
+  // 실패해도 게임 진행에 영향 없도록 실패를 조용히 무시 (fire-and-forget)
+  db.collection('analytics').doc(docId).set(
+    { [field]: firebase.firestore.FieldValue.increment(1) },
+    { merge: true }
+  ).catch((err) => console.warn('analytics log 실패(무시 가능):', err.message));
+}
+
+function logGameStart() {
+  logAnalytics('funnel', 'gameStarts');
+}
+function logStageDeath(stageIdx) {
+  logAnalytics('stage_deaths', `stage_${stageIdx}`);
+}
+function logGameClear() {
+  logAnalytics('funnel', 'gameClears');
+}
 
 /* ===================== 사운드 매니저 (Web Audio API로 직접 합성) ===================== */
 class SoundManager {
@@ -377,6 +458,11 @@ class TitleScene extends Phaser.Scene {
     rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView(); });
 
     this.add.text(450, 515, '조작: ↑ / ↓ 방향키 (또는 화면 버튼)', { fontSize: '14px', color: '#888888' }).setOrigin(0.5);
+
+    // 운영자용 - 눈에 띄지 않게 우측 하단에 작은 통계 링크만 배치
+    const statsLink = this.add.text(880, 545, '📊 통계', { fontSize: '12px', color: '#555555' })
+      .setOrigin(1, 1).setInteractive({ useHandCursor: true });
+    statsLink.on('pointerdown', () => { SFX.click(); showStatsView(); });
   }
 }
 
@@ -398,6 +484,7 @@ class MainScene extends Phaser.Scene {
     generateSafeArray();
     this.startTime = this.time.now;
     this.cameras.main.fadeIn(200, 0, 0, 0);
+    logGameStart();
 
     this.add.rectangle(0, 0, 900, 560, 0x2b2140).setOrigin(0);
     for (let i = 0; i < 40; i++) {
@@ -517,6 +604,7 @@ class MainScene extends Phaser.Scene {
     this.burstParticles(x, y, 0x8b5a2b, 10);
     this.shakeCamera();
     this.showFloatText(x, y - 20, '으아아악-', '#ff4757');
+    logStageDeath(stageIdx);
 
     this.tweens.add({
       targets: this.player, y: GROUND_Y + 60, angle: 360, duration: 500, ease: 'Quad.easeIn',
@@ -599,6 +687,7 @@ class MainScene extends Phaser.Scene {
       SFX.clear();
       this.messageText.setText('🎉 클리어! 🎉').setColor('#4ecdc4');
       this.showFloatText(450, 340, `기록: ${finalTime}초`, '#ffe66d');
+      logGameClear();
     } else {
       SFX.gameover();
       this.messageText.setText('💀 목숨 소진 💀').setColor('#ff6b6b');
