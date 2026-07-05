@@ -434,6 +434,94 @@ function logSignalClear() {
   logAnalytics('funnel_signal', 'gameClears');
 }
 
+/* ===================== 결과 공유 (SNS/카톡 텍스트 복사) =====================
+   워들(Wordle) 방식처럼, 유저가 결과를 캡처할 필요 없이 텍스트 한 줄로
+   카톡/인스타에 바로 붙여넣을 수 있게 합니다. 죽은 지점에 따라 킹받는 칭호가 랜덤으로 붙습니다. */
+const GAME_SHARE_URL = 'https://gtowpdwpd2-svg.github.io/geolbaengi-game/';
+
+const BRIDGE_FAIL_TITLES = [
+  '시작부터 개똥밭 인생',
+  '1단계 만에 풍당',
+  '동네 산책도 못하고 퐁',
+  '3단계 방황하다 퐁당',
+  '딱 반타작 거지',
+  '6부 능선에서 미끄덩',
+  '다 왔는데 미끄덩',
+  '8단계 뇌절 사고',
+  '9단계 코앞에서 골로 감',
+  '골인선 발 앞에서 풍덩'
+];
+const BRIDGE_SUCCESS_TITLES = [
+  '간당간당 생존왕',
+  '한숨 돌린 생존자',
+  '여유만만 통과',
+  '무결점 걸뱅이 신'
+];
+const SIGNAL_FAIL_TITLES = [
+  '출발선에서 바로 딱걸림',
+  '한 발짝 걷다 딱걸림',
+  '몸풀기도 못하고 정지',
+  '30% 지점 뇌절',
+  '반쯤 가서 심장 나감',
+  '절반 넘겨놓고 방심사',
+  '70% 지점 눈치 실패',
+  '거의 다 와서 얼음',
+  '골인선 코앞에서 얼음',
+  '한 발짝 남기고 딱걸림'
+];
+const SIGNAL_SUCCESS_TITLES = [
+  '간당간당 생존왕',
+  '한숨 돌린 생존자',
+  '여유만만 통과',
+  '무결점 걸뱅이 신'
+];
+
+function pickRandom(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function buildShareText({ gameLabel, success, finalTime, progressLabel, livesRemaining, failTitles, successTitles }) {
+  const title = success
+    ? pickRandom(successTitles)
+    : pickRandom(failTitles);
+  const outcomeLine = success ? `✅ 클리어! (${progressLabel})` : `❌ 탈락 (${progressLabel})`;
+  return [
+    '🫥 걸뱅이 아케이드',
+    gameLabel,
+    outcomeLine,
+    `⏱️ 기록: ${finalTime}초`,
+    `"${title}"`,
+    '너도 와서 내 기록 깨봐라 👉',
+    GAME_SHARE_URL
+  ].join('\n');
+}
+
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.warn('clipboard API 실패, 대체 방식 시도:', err.message);
+  }
+  // 클립보드 API가 막혀있는 환경(구형 브라우저 등)을 위한 대체 방식
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return true;
+  } catch (err) {
+    console.error('공유 문구 복사 실패:', err);
+    return false;
+  }
+}
+
 /* ===================== 사운드 매니저 (Web Audio API로 직접 합성) ===================== */
 class SoundManager {
   constructor() { this.ctx = null; }
@@ -988,6 +1076,23 @@ class MainScene extends Phaser.Scene {
     this.add.text(450, 504, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
     titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
 
+    this.hintText.setVisible(false);
+    const shareBtn = this.add.rectangle(450, 540, 220, 32, 0x8d6e63).setInteractive({ useHandCursor: true });
+    const shareLabel = this.add.text(450, 540, '📋 결과 공유문구 복사', { fontSize: '13px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+    shareBtn.on('pointerdown', async () => {
+      SFX.click();
+      const progressLabel = success ? '10/10단계 클리어' : `${this.currentStage}/10단계 탈락`;
+      const shareText = buildShareText({
+        gameLabel: '🌉 개똥 다리건너기',
+        success, finalTime, progressLabel,
+        failTitles: BRIDGE_FAIL_TITLES,
+        successTitles: BRIDGE_SUCCESS_TITLES
+      });
+      const ok = await copyTextToClipboard(shareText);
+      shareLabel.setText(ok ? '✅ 복사 완료! 카톡에 붙여넣기' : '복사 실패, 다시 시도해주세요');
+      this.time.delayedCall(1800, () => shareLabel.setText('📋 결과 공유문구 복사'));
+    });
+
     this.input.keyboard.once('keydown-SPACE', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
   }
 
@@ -1228,6 +1333,24 @@ class SignalScene extends Phaser.Scene {
     const titleBtn = this.add.rectangle(450, 424, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
     this.add.text(450, 424, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
     titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
+
+    this.hintText.setVisible(false);
+    const shareBtn = this.add.rectangle(450, 465, 220, 34, 0x8d6e63).setInteractive({ useHandCursor: true });
+    const shareLabel = this.add.text(450, 465, '📋 결과 공유문구 복사', { fontSize: '13px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+    shareBtn.on('pointerdown', async () => {
+      SFX.click();
+      const progressPct = Math.round((this.progress / SIGNAL_TRACK_LENGTH) * 100);
+      const progressLabel = success ? '골인 100%' : `${progressPct}% 지점 탈락`;
+      const shareText = buildShareText({
+        gameLabel: '🚦 눈치 신호등 게임',
+        success, finalTime, progressLabel,
+        failTitles: SIGNAL_FAIL_TITLES,
+        successTitles: SIGNAL_SUCCESS_TITLES
+      });
+      const ok = await copyTextToClipboard(shareText);
+      shareLabel.setText(ok ? '✅ 복사 완료! 카톡에 붙여넣기' : '복사 실패, 다시 시도해주세요');
+      this.time.delayedCall(1800, () => shareLabel.setText('📋 결과 공유문구 복사'));
+    });
   }
 }
 
