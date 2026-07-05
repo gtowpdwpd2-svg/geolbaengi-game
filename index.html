@@ -476,9 +476,18 @@ function startBGMOnce() {
 document.addEventListener('pointerdown', startBGMOnce);
 document.addEventListener('keydown', startBGMOnce);
 
-document.getElementById('bgm-toggle').addEventListener('click', () => {
-  const muted = BGM.toggleMute();
-  document.getElementById('bgm-toggle').textContent = muted ? '🔇' : '🔊';
+// 스피커 버튼 자체를 클릭할 때는, 문서 전역 리스너(startBGMOnce)와 겹쳐서
+// "재생 시작"과 "음소거"가 동시에 실행되는 걸 막기 위해 버블링을 막고 여기서 직접 처리합니다.
+const bgmToggleBtn = document.getElementById('bgm-toggle');
+bgmToggleBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+bgmToggleBtn.addEventListener('click', () => {
+  if (!BGM.playing) {
+    BGM.start();
+    BGM.muted = false;
+  } else {
+    BGM.toggleMute();
+  }
+  bgmToggleBtn.textContent = BGM.muted ? '🔇' : '🔊';
 });
 
 /* ===================== 상수 ===================== */
