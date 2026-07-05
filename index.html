@@ -957,6 +957,16 @@ const SIGNAL_TRACK_END_X = 800;
 const SIGNAL_TRACK_LENGTH = SIGNAL_TRACK_END_X - SIGNAL_TRACK_START_X;
 const SIGNAL_TRACK_Y = 300;
 const SIGNAL_SPEED = 160; // px/sec
+const SIGNAL_RED_GRACE = 0.18; // 빨간불로 바뀐 직후 반응할 시간(초) - 너무 짧으면 억울하고, 길면 게임이 쉬워지므로 최소한만 부여
+
+// 신호 지속시간 패턴 - 매번 이 중 하나를 랜덤으로 골라서 "짧게 끊기 / 보통 / 길게 방심 유도"를 섞습니다
+const GREEN_PATTERNS = [[1.0, 1.6], [1.8, 2.6], [2.8, 3.8]];
+const RED_PATTERNS = [[1.0, 1.6], [2.0, 3.0], [3.5, 5.0]];
+
+function pickPatternDuration(patterns) {
+  const range = patterns[Math.floor(Math.random() * patterns.length)];
+  return Phaser.Math.FloatBetween(range[0], range[1]);
+}
 
 class SignalScene extends Phaser.Scene {
   constructor() { super('SignalScene'); }
@@ -969,6 +979,7 @@ class SignalScene extends Phaser.Scene {
     this.gameOver = false;
     this.lightState = 'green'; // 'green' = 전진 가능, 'red' = 정지해야 함
     this.lightTimer = 0;
+    this.redGraceRemaining = 0; // 빨간불 전환 직후 반응 유예시간
   }
 
   create() {
@@ -1028,7 +1039,7 @@ class SignalScene extends Phaser.Scene {
     btnGo.on('pointerout', () => { this.touchHold = false; });
     this.touchHold = false;
 
-    this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.2, 2.2));
+    this.setNextLightPhase('green', pickPatternDuration(GREEN_PATTERNS));
   }
 
   setNextLightPhase(state, durationSec) {
@@ -1042,6 +1053,7 @@ class SignalScene extends Phaser.Scene {
       this.guard.setText('😠');
       this.lightLabel.setText('🔴 STOP');
       this.lightLabel.setColor('#ff6b6b');
+      this.redGraceRemaining = SIGNAL_RED_GRACE;
       SFX.click();
     }
   }
@@ -1057,15 +1069,17 @@ class SignalScene extends Phaser.Scene {
     this.lightTimer -= dt;
     if (this.lightTimer <= 0) {
       if (this.lightState === 'green') {
-        this.setNextLightPhase('red', Phaser.Math.FloatBetween(1.2, 2.8));
+        this.setNextLightPhase('red', pickPatternDuration(RED_PATTERNS));
       } else {
-        this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.4, 3.2));
+        this.setNextLightPhase('green', pickPatternDuration(GREEN_PATTERNS));
       }
     }
 
+    if (this.redGraceRemaining > 0) this.redGraceRemaining -= dt;
+
     this.isMoving = this.upKey.isDown || this.touchHold;
 
-    if (this.isMoving && this.lightState === 'red') {
+    if (this.isMoving && this.lightState === 'red' && this.redGraceRemaining <= 0) {
       this.onCaught();
       return;
     }
@@ -1100,7 +1114,7 @@ class SignalScene extends Phaser.Scene {
     this.progress = 0;
     this.player.x = SIGNAL_TRACK_START_X;
     this.progressBarFill.width = 4;
-    this.setNextLightPhase('green', Phaser.Math.FloatBetween(1.2, 2.2));
+    this.setNextLightPhase('green', pickPatternDuration(GREEN_PATTERNS));
   }
 
   shakeCamera() { this.cameras.main.shake(180, 0.01); }
