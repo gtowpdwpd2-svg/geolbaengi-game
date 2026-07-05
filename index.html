@@ -836,7 +836,8 @@ class MainScene extends Phaser.Scene {
   init() {
     this.currentStage = 0;
     this.lives = 3;
-    this.startTime = 0;
+    this.startTime = null;
+    this.hasStarted = false; // 첫 조작이 있기 전까지는 타이머가 흐르지 않음
     this.isJumping = false;
     this.gameOver = false;
     this.brokenPlatforms = new Set();
@@ -845,7 +846,6 @@ class MainScene extends Phaser.Scene {
   create() {
     hideLeaderboardOverlay();
     generateSafeArray();
-    this.startTime = Date.now(); // Phaser 내부 시계 대신 브라우저 시계 사용 (씬 전환/탭 전환에 영향받지 않도록)
     this.cameras.main.fadeIn(200, 0, 0, 0);
     logGameStart();
 
@@ -930,6 +930,10 @@ class MainScene extends Phaser.Scene {
   tryJump(side) {
     if (this.isJumping || this.gameOver) return;
     if (this.currentStage >= STAGE_COUNT) return;
+    if (!this.hasStarted) {
+      this.hasStarted = true;
+      this.startTime = Date.now(); // 첫 조작이 들어온 이 순간이 진짜 게임 시작 시점
+    }
     SFX.jump();
     this.isJumping = true;
     const stageIdx = this.currentStage;
@@ -1097,7 +1101,7 @@ class MainScene extends Phaser.Scene {
   }
 
   update() {
-    if (!this.gameOver) {
+    if (!this.gameOver && this.hasStarted) {
       const elapsed = (Date.now() - this.startTime) / 1000;
       this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
     }
@@ -1127,7 +1131,8 @@ class SignalScene extends Phaser.Scene {
   init() {
     this.progress = 0; // 0 ~ SIGNAL_TRACK_LENGTH
     this.lives = 3;
-    this.startTime = 0;
+    this.startTime = null;
+    this.hasStarted = false; // 첫 조작이 있기 전까지는 타이머가 흐르지 않음
     this.isMoving = false;
     this.gameOver = false;
     this.lightState = 'green'; // 'green' = 전진 가능, 'red' = 정지해야 함
@@ -1137,7 +1142,6 @@ class SignalScene extends Phaser.Scene {
 
   create() {
     hideLeaderboardOverlay();
-    this.startTime = Date.now(); // Phaser 내부 시계 대신 브라우저 시계 사용 (씬 전환/탭 전환에 영향받지 않도록)
     this.cameras.main.fadeIn(200, 0, 0, 0);
     logSignalStart();
 
@@ -1215,8 +1219,18 @@ class SignalScene extends Phaser.Scene {
     if (this.gameOver) return;
 
     const dt = delta / 1000;
-    const elapsed = (Date.now() - this.startTime) / 1000;
-    this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
+
+    this.isMoving = this.upKey.isDown || this.touchHold;
+
+    if (this.isMoving && !this.hasStarted) {
+      this.hasStarted = true;
+      this.startTime = Date.now(); // 첫 전진 시도가 들어온 이 순간이 진짜 게임 시작 시점
+    }
+
+    if (this.hasStarted) {
+      const elapsed = (Date.now() - this.startTime) / 1000;
+      this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
+    }
 
     // 신호 타이머 갱신
     this.lightTimer -= dt;
@@ -1229,8 +1243,6 @@ class SignalScene extends Phaser.Scene {
     }
 
     if (this.redGraceRemaining > 0) this.redGraceRemaining -= dt;
-
-    this.isMoving = this.upKey.isDown || this.touchHold;
 
     if (this.isMoving && this.lightState === 'red' && this.redGraceRemaining <= 0) {
       this.onCaught();
