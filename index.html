@@ -564,7 +564,8 @@ const GAME_LIST = [
     title: '개똥 다리건너기',
     desc: '10단계 발판을 외워서 무사히 건너라!',
     enabled: true,
-    sceneKey: 'MainScene'
+    sceneKey: 'MainScene',
+    scoresCollection: 'scores'
   },
   {
     key: 'signal',
@@ -572,7 +573,8 @@ const GAME_LIST = [
     title: '눈치 신호등 게임',
     desc: '감시자 몰래 전진해서 결승선까지!',
     enabled: true,
-    sceneKey: 'SignalScene'
+    sceneKey: 'SignalScene',
+    scoresCollection: 'scores_signal'
   }
 ];
 
@@ -628,10 +630,10 @@ class HubScene extends Phaser.Scene {
       listContainer.add(gDesc);
 
       if (game.enabled) {
-        const playBtn = this.add.rectangle(cardWidth / 2 - 60, cardY, 90, 40, 0xffe66d)
+        const playBtn = this.add.rectangle(cardWidth / 2 - 60, cardY - 16, 90, 34, 0xffe66d)
           .setInteractive({ useHandCursor: true });
-        const playLabel = this.add.text(cardWidth / 2 - 60, cardY, '▶ 플레이', {
-          fontSize: '13px', color: '#333', fontStyle: 'bold'
+        const playLabel = this.add.text(cardWidth / 2 - 60, cardY - 16, '▶ 플레이', {
+          fontSize: '12px', color: '#333', fontStyle: 'bold'
         }).setOrigin(0.5);
         listContainer.add(playBtn);
         listContainer.add(playLabel);
@@ -642,6 +644,22 @@ class HubScene extends Phaser.Scene {
           SFX.click();
           this.cameras.main.fadeOut(200, 0, 0, 0);
           this.time.delayedCall(200, () => this.scene.start(game.sceneKey));
+        });
+
+        // 게임마다 자기 자신의 랭킹만 정확히 보여주는 전용 버튼 (컬렉션명을 직접 고정해서 전달)
+        const rankMiniBtn = this.add.rectangle(cardWidth / 2 - 60, cardY + 24, 90, 30, 0x4ecdc4)
+          .setInteractive({ useHandCursor: true });
+        const rankMiniLabel = this.add.text(cardWidth / 2 - 60, cardY + 24, '🏆 랭킹', {
+          fontSize: '11px', color: '#003333', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        listContainer.add(rankMiniBtn);
+        listContainer.add(rankMiniLabel);
+
+        rankMiniBtn.on('pointerdown', (pointer, lx, ly, event) => {
+          if (this.hasDragged) return;
+          event.stopPropagation();
+          SFX.click();
+          showRankOnlyView(game.scoresCollection);
         });
       } else {
         const soonLabel = this.add.text(cardWidth / 2 - 60, cardY, '준비중', {
@@ -679,12 +697,9 @@ class HubScene extends Phaser.Scene {
       }
     });
 
-    // 하단 고정 버튼들
-    const rankBtn = this.add.rectangle(340, 505, 190, 42, 0x4ecdc4).setInteractive({ useHandCursor: true });
-    this.add.text(340, 505, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
-    rankBtn.on('pointerdown', (pointer, lx, ly, event) => { event.stopPropagation(); SFX.click(); showRankOnlyView(); });
-
-    this.add.text(450, 540, '조작: ↑ / ↓ 방향키 (또는 화면 버튼)', { fontSize: '13px', color: '#888888' }).setOrigin(0.5);
+    this.add.text(450, 505, '조작: ↑ / ↓ 방향키 (또는 화면 버튼) · 카드의 🏆 버튼으로 게임별 랭킹 확인', {
+      fontSize: '12px', color: '#888888'
+    }).setOrigin(0.5);
 
     // 운영자용 - 눈에 띄지 않게 작은 통계 링크
     const statsLink = this.add.text(880, 545, '📊 통계', { fontSize: '12px', color: '#555555' })
@@ -933,7 +948,7 @@ class MainScene extends Phaser.Scene {
     } else {
       const rankBtn = this.add.rectangle(450, 456, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
       this.add.text(450, 456, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
-      rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView(); });
+      rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView('scores'); });
     }
 
     const titleBtn = this.add.rectangle(450, 504, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
