@@ -152,6 +152,7 @@ db.settings({
   experimentalAutoDetectLongPolling: true,
   useFetchStreams: false
 });
+db.enableNetwork().catch((err) => console.warn('Firestore 네트워크 활성화 실패:', err.message));
 let currentUid = null;
 
 auth.signInAnonymously().catch((err) => {
@@ -228,7 +229,7 @@ async function showSubmitView(finalTime, collectionName = 'scores') {
   // 왜 등록이 막히는지 미리 알 수 있도록, 내 기존 최고기록을 먼저 보여줍니다.
   try {
     if (currentUid) {
-      const doc = await withTimeout(db.collection(collectionName).doc(currentUid).get(), 8000, '네트워크 응답이 너무 느립니다.');
+      const doc = await withTimeout(db.collection(collectionName).doc(currentUid).get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
       const existingTime = (doc.exists && typeof doc.data().time === 'number' && !isNaN(doc.data().time))
         ? doc.data().time
         : null;
@@ -271,10 +272,10 @@ async function showStatsView() {
   try {
     const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc] = await withTimeout(
       Promise.all([
-        db.collection('analytics').doc('funnel').get(),
-        db.collection('analytics').doc('stage_deaths').get(),
-        db.collection('analytics').doc('funnel_signal').get(),
-        db.collection('analytics').doc('signal_deaths').get()
+        db.collection('analytics').doc('funnel').get({ source: 'server' }),
+        db.collection('analytics').doc('stage_deaths').get({ source: 'server' }),
+        db.collection('analytics').doc('funnel_signal').get({ source: 'server' }),
+        db.collection('analytics').doc('signal_deaths').get({ source: 'server' })
       ]),
       8000,
       '네트워크 응답이 너무 느립니다.'
@@ -353,7 +354,7 @@ async function submitScore(finalTime, collectionName = 'scores') {
 
   try {
     const docRef = db.collection(collectionName).doc(currentUid);
-    const doc = await withTimeout(docRef.get(), 8000, '네트워크 응답이 너무 느립니다.');
+    const doc = await withTimeout(docRef.get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
     // 기존 문서의 time 값이 숫자가 아니거나 비정상이면 "기록 없음"으로 간주 (오탐 방지 방어코드)
     const existingTime = (doc.exists && typeof doc.data().time === 'number' && !isNaN(doc.data().time))
       ? doc.data().time
@@ -367,7 +368,7 @@ async function submitScore(finalTime, collectionName = 'scores') {
       }), 8000, '네트워크 응답이 너무 느립니다.');
 
       // 실제로 서버에 저장됐는지 다시 한번 읽어서 확인 (조용히 실패하는 경우를 잡아내기 위함)
-      const verifyDoc = await withTimeout(docRef.get(), 8000, '네트워크 응답이 너무 느립니다.');
+      const verifyDoc = await withTimeout(docRef.get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
       if (verifyDoc.exists && verifyDoc.data().time === finalTime) {
         status.textContent = '등록 완료! (서버 확인됨)';
         setTimeout(() => showRankOnlyView(collectionName), 800);
@@ -400,7 +401,7 @@ async function loadLeaderboard(collectionName = 'scores') {
   list.innerHTML = '<li>불러오는 중...</li>';
   try {
     const snapshot = await withTimeout(
-      db.collection(collectionName).orderBy('time').limit(10).get(),
+      db.collection(collectionName).orderBy('time').limit(10).get({ source: 'server' }),
       8000,
       '네트워크 응답이 너무 느립니다.'
     );
