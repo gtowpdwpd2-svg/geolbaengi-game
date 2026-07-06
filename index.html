@@ -146,6 +146,12 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
+// 일부 모바일 통신사 네트워크/브라우저에서 Firestore의 기본 스트리밍 연결(WebChannel)이
+// 응답 없이 계속 대기하는 문제가 있어, 더 안정적인 long-polling 방식으로 강제 전환합니다.
+db.settings({
+  experimentalAutoDetectLongPolling: true,
+  useFetchStreams: false
+});
 let currentUid = null;
 
 auth.signInAnonymously().catch((err) => {
