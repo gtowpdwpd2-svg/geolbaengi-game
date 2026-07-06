@@ -4,6 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>걸뱅이 게임 - 개똥 다리건너기</title>
+<script>
+/* ===================== 카카오톡 인앱 브라우저 대응 =====================
+   카카오톡 자체 브라우저는 Firestore 같은 실시간 연결에 제약이 있어 랭킹 기능이
+   먹통이 되는 경우가 있습니다. 감지되면 안드로이드는 자동으로 외부 브라우저(크롬)로
+   튕겨내고, iOS는 애플 정책상 자동 리다이렉트가 막혀있어 안내 배너로 유도합니다.
+   반드시 다른 스크립트보다 먼저 실행되어야 하므로 <head> 맨 위에 둡니다. */
+(function() {
+  var ua = navigator.userAgent || '';
+  var isKakaoInApp = /KAKAOTALK/i.test(ua);
+  if (!isKakaoInApp) return;
+
+  var isAndroid = /Android/i.test(ua);
+  if (isAndroid) {
+    var target = location.href.replace(/^https?:\/\//i, '');
+    location.href = 'intent://' + target + '#Intent;scheme=https;package=com.android.chrome;end';
+  } else {
+    document.addEventListener('DOMContentLoaded', function() {
+      var banner = document.createElement('div');
+      banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#ffe66d;color:#222;' +
+        'padding:12px 16px;text-align:center;font-size:14px;z-index:99999;line-height:1.5;' +
+        'font-family:-apple-system,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+      banner.innerHTML = '⚠️ 카카오톡 브라우저에서는 랭킹 기능이 제한됩니다.<br>' +
+        '우측 상단 <b>"···"</b> 메뉴 → <b>"다른 브라우저로 열기"</b>를 눌러주세요.';
+      document.body.appendChild(banner);
+    });
+  }
+})();
+</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.60.0/phaser.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -149,7 +177,7 @@ const db = firebase.firestore();
 // 일부 모바일 통신사 네트워크/브라우저에서 Firestore의 기본 스트리밍 연결(WebChannel)이
 // 응답 없이 계속 대기하는 문제가 있어, 더 안정적인 long-polling 방식으로 강제 전환합니다.
 db.settings({
-  experimentalAutoDetectLongPolling: true,
+  experimentalForceLongPolling: true, // 자동감지가 실패하는 경우가 있어, 감지 없이 무조건 강제 적용
   useFetchStreams: false
 });
 db.enableNetwork().catch((err) => console.warn('Firestore 네트워크 활성화 실패:', err.message));
