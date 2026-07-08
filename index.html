@@ -931,6 +931,19 @@ class HubScene extends Phaser.Scene {
     let dragStartPointerY = 0;
     let dragStartContainerY = 0;
 
+    // 카드가 뷰포트보다 길어져서 스크롤이 필요한 경우에만 "↓ 더 있어요" 힌트 표시
+    // (안 그러면 사용자가 마지막 카드가 잘렸다고 오해하기 쉬움)
+    let scrollHint = null;
+    if (contentHeight > viewHeight) {
+      scrollHint = this.add.text(450, viewBottom - 14, '▼ 아래로 끌어서 더 보기', {
+        fontSize: '13px', color: '#ffe66d', fontStyle: 'bold'
+      }).setOrigin(0.5).setDepth(5);
+      this.tweens.add({
+        targets: scrollHint, y: viewBottom - 6, alpha: { from: 1, to: 0.4 },
+        duration: 650, yoyo: true, repeat: -1, ease: 'Sine.easeInOut'
+      });
+    }
+
     this.input.on('pointerdown', (pointer) => {
       this.hasDragged = false;
       dragStartPointerY = pointer.y;
@@ -942,7 +955,15 @@ class HubScene extends Phaser.Scene {
       if (Math.abs(delta) > 14) this.hasDragged = true;
       if (contentHeight > viewHeight) {
         listContainer.y = Phaser.Math.Clamp(dragStartContainerY + delta, minY, maxY);
+        // 끝까지 스크롤했으면 힌트 숨김
+        if (scrollHint) scrollHint.setVisible(listContainer.y > minY + 5);
       }
+    });
+    // 데스크탑 마우스 휠 스크롤 지원
+    this.input.on('wheel', (pointer, gameObjects, deltaX, deltaY) => {
+      if (contentHeight <= viewHeight) return;
+      listContainer.y = Phaser.Math.Clamp(listContainer.y - deltaY * 0.6, minY, maxY);
+      if (scrollHint) scrollHint.setVisible(listContainer.y > minY + 5);
     });
 
     this.add.text(450, 505, '조작: ↑ / ↓ 방향키 (또는 화면 버튼) · 카드의 🏆 버튼으로 게임별 랭킹 확인', {
