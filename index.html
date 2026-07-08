@@ -52,6 +52,8 @@
     box-shadow: 0 0 50px rgba(255, 200, 0, 0.12);
     border-radius: 8px;
     overflow: hidden;
+    width: 100vw;
+    height: 100vh;
     max-width: 100vw;
     max-height: 100vh;
     touch-action: none;
@@ -1571,7 +1573,7 @@ class TableScene extends Phaser.Scene {
       fontSize: '15px', color: '#cccccc'
     }).setOrigin(0.5);
 
-    this.messageText = this.add.text(450, 400, '', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' })
+    this.messageText = this.add.text(450, 190, '', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' })
       .setOrigin(0.5).setDepth(10);
     this.quoteText = this.add.text(450, 200, '', {
       fontSize: '19px', color: '#ffd54a', fontStyle: 'italic', align: 'center', wordWrap: { width: 500 }
@@ -1730,6 +1732,8 @@ class TableScene extends Phaser.Scene {
 
   finishTableGame(success) {
     this.gameOver = true;
+    this.table.setVisible(false);
+    this.quoteText.setVisible(false);
     if (this.dangerTween) {
       this.dangerTween.stop();
       this.dangerTween = null;
