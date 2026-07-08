@@ -227,7 +227,8 @@ auth.onAuthStateChanged((user) => {
 // 게임별 표시 이름 (랭킹판 제목에 사용)
 const LEADERBOARD_LABELS = {
   scores: '🌉 개똥 다리건너기',
-  scores_signal: '🚦 눈치 신호등 게임'
+  scores_signal: '🚦 눈치 신호등 게임',
+  scores_table: '🍚 밥상 눈치싸움'
 };
 
 // 현재 열려있는 랭킹판이 어떤 게임 것인지 기억 (건너뛰기/닫기 버튼에서 참조)
@@ -298,12 +299,14 @@ async function showStatsView() {
   content.textContent = '불러오는 중...';
 
   try {
-    const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc] = await withTimeout(
+    const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc, tableFunnelDoc, tableDeathsDoc] = await withTimeout(
       Promise.all([
         db.collection('analytics').doc('funnel').get({ source: 'server' }),
         db.collection('analytics').doc('stage_deaths').get({ source: 'server' }),
         db.collection('analytics').doc('funnel_signal').get({ source: 'server' }),
-        db.collection('analytics').doc('signal_deaths').get({ source: 'server' })
+        db.collection('analytics').doc('signal_deaths').get({ source: 'server' }),
+        db.collection('analytics').doc('funnel_table').get({ source: 'server' }),
+        db.collection('analytics').doc('table_deaths').get({ source: 'server' })
       ]),
       8000,
       '네트워크 응답이 너무 느립니다.'
@@ -343,6 +346,23 @@ async function showStatsView() {
       const count = sDeaths[`bucket_${i}`] || 0;
       const isMax = sMax > 0 && count === sMax;
       html += `<div>${i * 10}~${(i + 1) * 10}% 구간: ${count}회${isMax ? ' 🔥' : ''}</div>`;
+    }
+
+    // 🍚 밥상 눈치싸움 통계
+    const tFunnel = tableFunnelDoc.exists ? tableFunnelDoc.data() : {};
+    const tDeaths = tableDeathsDoc.exists ? tableDeathsDoc.data() : {};
+    const tStarts = tFunnel.gameStarts || 0;
+    const tClears = tFunnel.gameClears || 0;
+    const tRate = tStarts > 0 ? ((tClears / tStarts) * 100).toFixed(1) : '0.0';
+
+    html += `<p style="margin-top:10px; color:#ffe66d;"><b>🍚 밥상 눈치싸움</b></p>`;
+    html += `<p>시작 ${tStarts}회 / 클리어 ${tClears}회 (${tRate}%)</p>`;
+    let tMax = 0;
+    for (let i = 1; i <= TABLE_ROUNDS; i++) tMax = Math.max(tMax, tDeaths[`round_${i}`] || 0);
+    for (let i = 1; i <= TABLE_ROUNDS; i++) {
+      const count = tDeaths[`round_${i}`] || 0;
+      const isMax = tMax > 0 && count === tMax;
+      html += `<div>${i}라운드: ${count}회${isMax ? ' 🔥' : ''}</div>`;
     }
 
     content.innerHTML = html;
@@ -500,6 +520,17 @@ function logSignalClear() {
   logAnalytics('funnel_signal', 'gameClears');
 }
 
+// 밥상 눈치싸움 전용 로그 (별도 문서 사용 - 다른 게임 데이터와 섞이지 않도록)
+function logTableStart() {
+  logAnalytics('funnel_table', 'gameStarts');
+}
+function logTableDeath(round) {
+  logAnalytics('table_deaths', `round_${round}`);
+}
+function logTableClear() {
+  logAnalytics('funnel_table', 'gameClears');
+}
+
 /* ===================== 결과 공유 (SNS/카톡 텍스트 복사) =====================
    워들(Wordle) 방식처럼, 유저가 결과를 캡처할 필요 없이 텍스트 한 줄로
    카톡/인스타에 바로 붙여넣을 수 있게 합니다. 죽은 지점에 따라 킹받는 칭호가 랜덤으로 붙습니다. */
@@ -539,6 +570,25 @@ const SIGNAL_SUCCESS_TITLES = [
   '간당간당 생존왕',
   '한숨 돌린 생존자',
   '여유만만 통과',
+  '무결점 걸뱅이 신'
+];
+
+const TABLE_FAIL_TITLES = [
+  '젓가락도 못 든 자',
+  '숟가락 반납각',
+  '밥상 근처도 못 간 자',
+  '반찬 하나 못 지킨 자',
+  '손목 스냅 부족러',
+  '타이밍 헛스윙 장인',
+  '한 끗 차이로 국물 흘린 자',
+  '거의 다 왔는데 뒤엎은 자',
+  '9라운드의 저주',
+  '밥상 뒤엎기 장인'
+];
+const TABLE_SUCCESS_TITLES = [
+  '간당간당 생존왕',
+  '반사신경 괴물',
+  '밥상 위의 도(道)를 깨달은 자',
   '무결점 걸뱅이 신'
 ];
 
@@ -762,6 +812,15 @@ const GAME_LIST = [
     enabled: true,
     sceneKey: 'SignalScene',
     scoresCollection: 'scores_signal'
+  },
+  {
+    key: 'table',
+    emoji: '🍚',
+    title: '밥상 눈치싸움',
+    desc: '타이밍 맞춰 세이프존을 노려라! 반사신경 극한 테스트.',
+    enabled: true,
+    sceneKey: 'TableScene',
+    scoresCollection: 'scores_table'
   }
 ];
 
@@ -1432,6 +1491,301 @@ class SignalScene extends Phaser.Scene {
   }
 }
 
+/* ===================== 밥상 눈치싸움 씬 - 정밀 타이밍 세이프존 탭 =====================
+   메커닉: 젓가락(🥢)이 트랙을 왕복하고, 라운드마다 랜덤 위치에 세이프존(초록)이 생김.
+   화면 탭 시 젓가락이 세이프존 안에 있으면 성공, 아니면 실패(목숨 -1).
+   총 10라운드 클리어까지 걸린 시간이 랭킹 기록(scores_table, 낮을수록 우수 - 기존 스키마 재사용).
+   실패해도 라운드는 유지하고 같은 라운드에서 재도전 (세이프존 위치만 새로 랜덤). */
+const TABLE_ROUNDS = 10;
+const TABLE_TRACK_START_X = 140;
+const TABLE_TRACK_END_X = 760;
+const TABLE_TRACK_Y = 300;
+
+function getTableZoneWidth(round) {
+  // round 1: 80px -> round 10: 19px (지수 곡선, 후반부 급격히 좁아짐)
+  const t = (round - 1) / (TABLE_ROUNDS - 1);
+  return Phaser.Math.Linear(80, 19, Math.pow(t, 0.7));
+}
+function getTableSpeed(round) {
+  // round 1: 1200px/s -> round 10: 2550px/s (대표님 요청으로 극한 난이도 적용됨)
+  const t = (round - 1) / (TABLE_ROUNDS - 1);
+  return Phaser.Math.Linear(1200, 2550, Math.pow(t, 0.85));
+}
+
+// 성공할 때마다 랜덤으로 뜨는 '진지충 필살기 명언' (특정 작품 패러디 아닌 오리지널 병맛 대사)
+const TABLE_HYPE_QUOTES = [
+  '네 젓가락질은... 이미 죽어있다.',
+  '밥알 한 톨의 각오도 없이 덤빈 것이냐.',
+  '국물 튀는 소리조차 늦다.',
+  '이 손목은 이미 계산을 끝냈다.',
+  '반찬을 지킨다는 것, 그것은 각오다.',
+  '너의 젓가락보다 내가 한 끗 빨랐을 뿐이다.',
+  '실력이 아니다. 밥심이다.',
+  '숟가락을 들 자격, 지금 증명했다.',
+  '떨어지는 밥알조차 나를 기다려주지 않는다.',
+  '완벽한 타이밍... 이것이 밥상 위의 도(道)다.'
+];
+function getTableHypeQuote() {
+  return Phaser.Utils.Array.GetRandom(TABLE_HYPE_QUOTES);
+}
+
+class TableScene extends Phaser.Scene {
+  constructor() { super('TableScene'); }
+
+  init() {
+    this.round = 1;
+    this.lives = 3;
+    this.startTime = null;
+    this.hasStarted = false;
+    this.gameOver = false;
+    this.inputLocked = false;
+  }
+
+  create() {
+    hideLeaderboardOverlay();
+    this.cameras.main.fadeIn(200, 0, 0, 0);
+    logTableStart();
+
+    this.add.rectangle(0, 0, 900, 560, 0x2b2320).setOrigin(0);
+    for (let i = 0; i < 40; i++) {
+      this.add.circle(
+        Phaser.Math.Between(0, 900), Phaser.Math.Between(0, 400),
+        Phaser.Math.Between(1, 2), 0xffffff, Phaser.Math.FloatBetween(0.2, 0.6)
+      );
+    }
+
+    // 트랙(밥상 위 궤도)
+    this.add.rectangle(TABLE_TRACK_START_X, TABLE_TRACK_Y, TABLE_TRACK_END_X - TABLE_TRACK_START_X, 30, 0x4a3b30)
+      .setOrigin(0, 0.5).setStrokeStyle(3, 0x1a1210);
+
+    this.zoneGfx = this.add.graphics();
+
+    this.indicator = this.add.text(TABLE_TRACK_START_X, TABLE_TRACK_Y, '🥢', { fontSize: '40px' }).setOrigin(0.5);
+    this.indicatorDir = 1;
+    this.indicatorX = TABLE_TRACK_START_X;
+
+    this.livesText = this.add.text(20, 20, '❤️'.repeat(this.lives), { fontSize: '22px' });
+    this.roundText = this.add.text(20, 50, `라운드: ${this.round} / ${TABLE_ROUNDS}`, { fontSize: '18px', color: '#ffffff' });
+    this.timerText = this.add.text(20, 78, '시간: 0.0s', { fontSize: '18px', color: '#ffffff' });
+    this.hintText = this.add.text(450, 520, '화면을 탭해서 세이프존(초록)에 맞춰라! 타이밍이 전부다.', {
+      fontSize: '15px', color: '#cccccc'
+    }).setOrigin(0.5);
+
+    this.messageText = this.add.text(450, 400, '', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' })
+      .setOrigin(0.5).setDepth(10);
+    this.quoteText = this.add.text(450, 200, '', {
+      fontSize: '19px', color: '#ffd54a', fontStyle: 'italic', align: 'center', wordWrap: { width: 500 }
+    }).setOrigin(0.5).setAlpha(0).setDepth(10);
+
+    this.table = this.add.text(450, 440, '🍚🍲🥢', { fontSize: '52px' }).setOrigin(0.5);
+
+    this.dangerBorder = this.add.graphics().setDepth(9);
+    this.dangerBorder.lineStyle(10, 0xff0000, 1);
+    this.dangerBorder.strokeRect(5, 5, 890, 550);
+    this.dangerBorder.setVisible(false);
+    this.dangerTween = null;
+
+    this.setupTableRound();
+
+    this.input.on('pointerdown', () => this.handleTableTap());
+  }
+
+  setupTableRound() {
+    const zoneW = getTableZoneWidth(this.round);
+    const margin = zoneW / 2 + 15;
+    const zoneCenter = Phaser.Math.Between(TABLE_TRACK_START_X + margin, TABLE_TRACK_END_X - margin);
+    this.zoneStart = zoneCenter - zoneW / 2;
+    this.zoneEnd = zoneCenter + zoneW / 2;
+    this.speed = getTableSpeed(this.round);
+    this.indicatorX = TABLE_TRACK_START_X;
+    this.indicatorDir = 1;
+    this.drawTableZone();
+    this.roundText.setText(`라운드: ${this.round} / ${TABLE_ROUNDS}`);
+  }
+
+  drawTableZone() {
+    this.zoneGfx.clear();
+    this.zoneGfx.fillStyle(0x4caf50, 0.85);
+    this.zoneGfx.fillRect(this.zoneStart, TABLE_TRACK_Y - 15, this.zoneEnd - this.zoneStart, 30);
+  }
+
+  update(time, delta) {
+    if (this.gameOver) return;
+    const dt = delta / 1000;
+
+    this.indicatorX += this.indicatorDir * this.speed * dt;
+    if (this.indicatorX >= TABLE_TRACK_END_X) { this.indicatorX = TABLE_TRACK_END_X; this.indicatorDir = -1; }
+    if (this.indicatorX <= TABLE_TRACK_START_X) { this.indicatorX = TABLE_TRACK_START_X; this.indicatorDir = 1; }
+    this.indicator.x = this.indicatorX;
+
+    if (this.lives === 1) {
+      this.dangerBorder.setAlpha(0.5 + Math.sin(time / 120) * 0.5);
+    }
+
+    if (this.hasStarted) {
+      const elapsed = (Date.now() - this.startTime) / 1000;
+      this.timerText.setText(`시간: ${elapsed.toFixed(1)}s`);
+    }
+  }
+
+  handleTableTap() {
+    if (this.gameOver || this.inputLocked) return;
+
+    if (!this.hasStarted) {
+      this.hasStarted = true;
+      this.startTime = Date.now(); // 첫 탭이 들어온 이 순간이 진짜 게임 시작 시점
+    }
+
+    const inZone = this.indicatorX >= this.zoneStart && this.indicatorX <= this.zoneEnd;
+    if (inZone) this.onTableSuccess();
+    else this.onTableFail();
+  }
+
+  onTableSuccess() {
+    SFX.land();
+    this.inputLocked = true;
+    this.indicator.setScale(1.4);
+    this.tweens.add({
+      targets: this.indicator, scale: 1, duration: 150,
+      onComplete: () => { this.inputLocked = false; }
+    });
+    this.burstTableParticles(this.indicatorX, TABLE_TRACK_Y, 0x4ecdc4, 8);
+
+    this.quoteText.setText(`"${getTableHypeQuote()}"`);
+    this.quoteText.setAlpha(1).setY(200);
+    this.tweens.add({
+      targets: this.quoteText, y: 180, alpha: { from: 1, to: 0 },
+      duration: 900, delay: 250, ease: 'Cubic.easeOut'
+    });
+
+    if (this.round >= TABLE_ROUNDS) {
+      this.finishTableGame(true);
+    } else {
+      this.round++;
+      this.setupTableRound();
+    }
+  }
+
+  onTableFail() {
+    SFX.fall();
+    this.shakeCamera();
+    this.showTableFloatText(this.indicatorX, TABLE_TRACK_Y - 30, '헛손질!', '#ff4757');
+    logTableDeath(this.round);
+
+    this.inputLocked = true;
+    this.tweens.add({
+      targets: this.table, angle: { from: 0, to: -25 }, y: '-=20',
+      duration: 90, yoyo: true, repeat: 2,
+      onComplete: () => { this.table.setAngle(0); this.inputLocked = false; }
+    });
+
+    this.lives--;
+    this.livesText.setText('❤️'.repeat(Math.max(this.lives, 0)));
+    this.updateTableDangerBorder();
+
+    if (this.lives <= 0) {
+      this.finishTableGame(false);
+    } else {
+      // 목숨이 남아있으면 같은 라운드에서 재도전 (세이프존 위치만 새로 랜덤)
+      this.setupTableRound();
+    }
+  }
+
+  shakeCamera() { this.cameras.main.shake(180, 0.01); }
+
+  updateTableDangerBorder() {
+    if (this.lives === 1) {
+      this.dangerBorder.setVisible(true);
+      if (!this.dangerTween) {
+        this.dangerTween = this.tweens.add({
+          targets: this.dangerBorder, alpha: { from: 1, to: 0.15 }, duration: 500, yoyo: true, repeat: -1
+        });
+      }
+    } else {
+      this.dangerBorder.setVisible(false);
+      if (this.dangerTween) {
+        this.dangerTween.stop();
+        this.dangerTween = null;
+        this.dangerBorder.setAlpha(1);
+      }
+    }
+  }
+
+  burstTableParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+      const p = this.add.circle(x, y, Phaser.Math.Between(2, 4), color);
+      const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
+      const dist = Phaser.Math.Between(20, 50);
+      this.tweens.add({
+        targets: p, x: x + Math.cos(angle) * dist, y: y + Math.sin(angle) * dist, alpha: 0,
+        duration: 400, ease: 'Quad.easeOut', onComplete: () => p.destroy()
+      });
+    }
+  }
+
+  showTableFloatText(x, y, msg, color) {
+    const t = this.add.text(x, y, msg, { fontSize: '20px', color: color, fontStyle: 'bold' }).setOrigin(0.5);
+    this.tweens.add({ targets: t, y: y - 40, alpha: 0, duration: 700, onComplete: () => t.destroy() });
+  }
+
+  finishTableGame(success) {
+    this.gameOver = true;
+    if (this.dangerTween) {
+      this.dangerTween.stop();
+      this.dangerTween = null;
+      this.dangerBorder.setVisible(false);
+    }
+    const finalTime = parseFloat(((Date.now() - this.startTime) / 1000).toFixed(1));
+
+    if (success) {
+      SFX.clear();
+      this.messageText.setText('🎉 클리어! 🎉').setColor('#4ecdc4');
+      this.showTableFloatText(450, 340, `기록: ${finalTime}초`, '#ffe66d');
+      logTableClear();
+    } else {
+      SFX.gameover();
+      this.messageText.setText('💀 목숨 소진 💀').setColor('#ff6b6b');
+    }
+
+    const restartBtn = this.add.rectangle(450, 400, 160, 46, 0xffe66d).setInteractive({ useHandCursor: true });
+    this.add.text(450, 400, '다시 도전', { fontSize: '18px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    restartBtn.on('pointerover', () => restartBtn.setFillStyle(0xfff3a0));
+    restartBtn.on('pointerout', () => restartBtn.setFillStyle(0xffe66d));
+    restartBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
+
+    if (success) {
+      const rankBtn = this.add.rectangle(450, 456, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 456, '🏆 기록 등록 / 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showSubmitView(finalTime, 'scores_table'); });
+    } else {
+      const rankBtn = this.add.rectangle(450, 456, 220, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+      this.add.text(450, 456, '🏆 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+      rankBtn.on('pointerdown', () => { SFX.click(); showRankOnlyView('scores_table'); });
+    }
+
+    const titleBtn = this.add.rectangle(450, 504, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
+    this.add.text(450, 504, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
+
+    this.hintText.setVisible(false);
+    const shareBtn = this.add.rectangle(450, 540, 220, 32, 0x8d6e63).setInteractive({ useHandCursor: true });
+    const shareLabel = this.add.text(450, 540, '📋 결과 공유문구 복사', { fontSize: '13px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+    shareBtn.on('pointerdown', async () => {
+      SFX.click();
+      const progressLabel = success ? '10/10라운드 클리어' : `${this.round}/10라운드 탈락`;
+      const shareText = buildShareText({
+        gameLabel: '🍚 밥상 눈치싸움',
+        success, finalTime, progressLabel,
+        failTitles: TABLE_FAIL_TITLES,
+        successTitles: TABLE_SUCCESS_TITLES
+      });
+      const ok = await copyTextToClipboard(shareText);
+      shareLabel.setText(ok ? '✅ 복사 완료! 카톡에 붙여넣기' : '복사 실패, 다시 시도해주세요');
+      this.time.delayedCall(1800, () => shareLabel.setText('📋 결과 공유문구 복사'));
+    });
+  }
+}
+
 const config = {
   type: Phaser.AUTO,
   width: 900,
@@ -1439,7 +1793,7 @@ const config = {
   parent: 'game-container',
   backgroundColor: '#1a1a2e',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [HubScene, MainScene, SignalScene]
+  scene: [HubScene, MainScene, SignalScene, TableScene]
 };
 
 new Phaser.Game(config);
