@@ -230,8 +230,22 @@ auth.onAuthStateChanged((user) => {
 const LEADERBOARD_LABELS = {
   scores: '🌉 개똥 다리건너기',
   scores_signal: '🚦 눈치 신호등 게임',
-  scores_table: '🍚 밥상 눈치싸움'
+  scores_table: '🍚 밥상 눈치싸움',
+  scores_change: '💸 거스름돈 타짜'
 };
+
+// scores/scores_signal/scores_table 은 "시간, 낮을수록 우수" 방식이지만
+// scores_change(거스름돈 타짜)는 "해결한 문제 수, 높을수록 우수" 방식이라 정렬/비교 방향이 반대.
+// 이 Set에 포함된 컬렉션은 아래 showScoreSubmitView / showScoreRankOnlyView 계열 함수를 사용.
+const SCORE_BASED_COLLECTIONS = new Set(['scores_change']);
+
+function openRankingFor(collectionName) {
+  if (SCORE_BASED_COLLECTIONS.has(collectionName)) {
+    showScoreRankOnlyView(collectionName);
+  } else {
+    showRankOnlyView(collectionName);
+  }
+}
 
 // 현재 열려있는 랭킹판이 어떤 게임 것인지 기억 (건너뛰기/닫기 버튼에서 참조)
 let activeLeaderboardCollection = 'scores';
@@ -301,14 +315,16 @@ async function showStatsView() {
   content.textContent = '불러오는 중...';
 
   try {
-    const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc, tableFunnelDoc, tableDeathsDoc] = await withTimeout(
+    const [bridgeFunnelDoc, bridgeDeathsDoc, signalFunnelDoc, signalDeathsDoc, tableFunnelDoc, tableDeathsDoc, changeFunnelDoc, changeBucketsDoc] = await withTimeout(
       Promise.all([
         db.collection('analytics').doc('funnel').get({ source: 'server' }),
         db.collection('analytics').doc('stage_deaths').get({ source: 'server' }),
         db.collection('analytics').doc('funnel_signal').get({ source: 'server' }),
         db.collection('analytics').doc('signal_deaths').get({ source: 'server' }),
         db.collection('analytics').doc('funnel_table').get({ source: 'server' }),
-        db.collection('analytics').doc('table_deaths').get({ source: 'server' })
+        db.collection('analytics').doc('table_deaths').get({ source: 'server' }),
+        db.collection('analytics').doc('funnel_change').get({ source: 'server' }),
+        db.collection('analytics').doc('change_solved_buckets').get({ source: 'server' })
       ]),
       8000,
       '네트워크 응답이 너무 느립니다.'
@@ -365,6 +381,24 @@ async function showStatsView() {
       const count = tDeaths[`round_${i}`] || 0;
       const isMax = tMax > 0 && count === tMax;
       html += `<div>${i}라운드: ${count}회${isMax ? ' 🔥' : ''}</div>`;
+    }
+
+    // 💸 거스름돈 타짜 통계 (무한 서바이벌이라 클리어 개념 없음 - 해결 문제 수 분포로 표시)
+    const cFunnel = changeFunnelDoc.exists ? changeFunnelDoc.data() : {};
+    const cBuckets = changeBucketsDoc.exists ? changeBucketsDoc.data() : {};
+    const cStarts = cFunnel.gameStarts || 0;
+
+    html += `<p style="margin-top:10px; color:#ffe66d;"><b>💸 거스름돈 타짜</b></p>`;
+    html += `<p>시작 ${cStarts}회</p>`;
+    const bucketKeys = Object.keys(cBuckets).filter(k => k.startsWith('bucket_'))
+      .sort((a, b) => parseInt(a.split('_')[1]) - parseInt(b.split('_')[1]));
+    if (bucketKeys.length === 0) {
+      html += `<div>아직 게임오버 데이터 없음</div>`;
+    } else {
+      bucketKeys.forEach(k => {
+        const start = parseInt(k.split('_')[1]);
+        html += `<div>${start}~${start + 4}문제: ${cBuckets[k]}회</div>`;
+      });
     }
 
     content.innerHTML = html;
@@ -477,7 +511,133 @@ async function loadLeaderboard(collectionName = 'scores') {
   }
 }
 
-document.getElementById('lb-skip-btn').addEventListener('click', () => showRankOnlyView(activeLeaderboardCollection));
+/* ===================== 점수 기반 랭킹 시스템 (높을수록 우수) =====================
+   위의 showSubmitView/submitScore/loadLeaderboard는 전부 "시간, 낮을수록 우수" 전제로 짜여있어서
+   그대로 재사용할 수 없음. 거스름돈 타짜(scores_change)처럼 "해결한 문제 수, 높을수록 우수"인
+   게임을 위해 별도로 만든 버전. 같은 DOM(모달)을 그대로 재사용하되 비교/정렬 방향만 반대로 감. */
+
+async function showScoreSubmitView(finalScore, collectionName) {
+  activeLeaderboardCollection = collectionName;
+  const label = LEADERBOARD_LABELS[collectionName] || collectionName;
+  document.getElementById('lb-time-display').textContent = `[${label}] 이번 기록: ${finalScore}문제 해결`;
+  document.getElementById('lb-submit-view').classList.remove('hidden');
+  document.getElementById('lb-rank-view').classList.add('hidden');
+  document.getElementById('lb-stats-view').classList.add('hidden');
+  document.getElementById('leaderboard-overlay').classList.remove('hidden');
+  document.getElementById('lb-status').textContent = '내 최고기록 확인 중...';
+  document.getElementById('lb-nickname').value = '';
+  document.getElementById('lb-submit-btn').onclick = () => submitScoreValue(finalScore, collectionName);
+  document.getElementById('lb-nickname').focus();
+
+  try {
+    if (currentUid) {
+      const doc = await withTimeout(db.collection(collectionName).doc(currentUid).get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
+      const existingScore = (doc.exists && typeof doc.data().score === 'number' && !isNaN(doc.data().score))
+        ? doc.data().score
+        : null;
+      if (existingScore !== null) {
+        document.getElementById('lb-status').textContent =
+          finalScore > existingScore
+            ? `내 기존 최고기록: ${existingScore}문제 → 이번 기록이 더 높습니다! 등록하세요.`
+            : `내 기존 최고기록: ${existingScore}문제 (이번 기록보다 높음 - 등록해도 갱신되지 않습니다)`;
+      } else {
+        document.getElementById('lb-status').textContent = '첫 기록입니다. 등록해보세요!';
+      }
+    }
+  } catch (err) {
+    console.warn('최고기록 조회 실패:', err.message);
+    document.getElementById('lb-status').textContent = '네트워크가 느려 확인 못했지만, 등록 시도는 가능합니다.';
+  }
+}
+
+async function submitScoreValue(finalScore, collectionName) {
+  const nicknameInput = document.getElementById('lb-nickname');
+  const status = document.getElementById('lb-status');
+  const nickname = nicknameInput.value.trim();
+  const submitBtn = document.getElementById('lb-submit-btn');
+
+  if (!currentUid) { status.textContent = '로그인 준비 중입니다. 잠시 후 다시 시도해주세요.'; return; }
+  if (!nickname) { status.textContent = '닉네임을 입력해주세요.'; return; }
+  if (!isValidNickname(nickname)) { status.textContent = '닉네임은 한글/영문/숫자 10자 이내로 입력해주세요.'; return; }
+
+  status.textContent = '등록 중...';
+  submitBtn.disabled = true;
+
+  try {
+    const docRef = db.collection(collectionName).doc(currentUid);
+    const doc = await withTimeout(docRef.get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
+    const existingScore = (doc.exists && typeof doc.data().score === 'number' && !isNaN(doc.data().score))
+      ? doc.data().score
+      : null;
+
+    if (existingScore === null || finalScore > existingScore) {
+      await withTimeout(docRef.set({
+        nickname: nickname,
+        score: finalScore,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }), 8000, '네트워크 응답이 너무 느립니다.');
+
+      const verifyDoc = await withTimeout(docRef.get({ source: 'server' }), 8000, '네트워크 응답이 너무 느립니다.');
+      if (verifyDoc.exists && verifyDoc.data().score === finalScore) {
+        status.textContent = '등록 완료! (서버 확인됨)';
+        setTimeout(() => showScoreRankOnlyView(collectionName), 800);
+      } else {
+        status.textContent = '저장 시도는 했지만 서버에서 확인되지 않았습니다. 새로고침 후 다시 시도해주세요.';
+      }
+    } else {
+      status.textContent = `이미 더 좋은 기록(${existingScore}문제)이 있어요!`;
+    }
+  } catch (err) {
+    console.error(err);
+    status.textContent = `등록 실패: ${err.message || err.code || '알 수 없는 오류'}`;
+  } finally {
+    submitBtn.disabled = false;
+  }
+}
+
+function showScoreRankOnlyView(collectionName) {
+  activeLeaderboardCollection = collectionName;
+  const label = LEADERBOARD_LABELS[collectionName] || collectionName;
+  document.getElementById('lb-rank-title').textContent = `🏆 ${label} TOP 10`;
+  document.getElementById('lb-submit-view').classList.add('hidden');
+  document.getElementById('lb-rank-view').classList.remove('hidden');
+  document.getElementById('lb-stats-view').classList.add('hidden');
+  document.getElementById('leaderboard-overlay').classList.remove('hidden');
+  loadScoreLeaderboard(collectionName);
+}
+
+async function loadScoreLeaderboard(collectionName) {
+  const list = document.getElementById('lb-rank-list');
+  list.innerHTML = '<li>불러오는 중...</li>';
+  try {
+    const snapshot = await withTimeout(
+      db.collection(collectionName).orderBy('score', 'desc').limit(10).get({ source: 'server' }),
+      8000,
+      '네트워크 응답이 너무 느립니다.'
+    );
+    if (snapshot.empty) {
+      list.innerHTML = '<li>아직 등록된 기록이 없습니다.</li>';
+      return;
+    }
+    list.innerHTML = '';
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      const li = document.createElement('li');
+      li.textContent = `${data.nickname} - ${data.score}문제`;
+      if (doc.id === currentUid) li.classList.add('lb-me');
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = `<li>네트워크가 느립니다. <span id="lb-score-retry-link" style="color:#4ecdc4; text-decoration:underline; cursor:pointer;">다시 시도</span></li>`;
+    const retryLink = document.getElementById('lb-score-retry-link');
+    if (retryLink) {
+      retryLink.addEventListener('click', () => loadScoreLeaderboard(collectionName));
+    }
+  }
+}
+
+document.getElementById('lb-skip-btn').addEventListener('click', () => openRankingFor(activeLeaderboardCollection));
 document.getElementById('lb-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
 document.getElementById('lb-stats-close-btn').addEventListener('click', () => hideLeaderboardOverlay());
 
@@ -531,6 +691,16 @@ function logTableDeath(round) {
 }
 function logTableClear() {
   logAnalytics('funnel_table', 'gameClears');
+}
+
+// 거스름돈 타짜 전용 로그. 클리어 개념이 없는 무한 서바이벌이라 gameClears는 없고,
+// 대신 "몇 문제 해결하고 끝났는지"를 5단위로 묶어서 분포를 봄 (0~4, 5~9, 10~14 ...)
+function logChangeStart() {
+  logAnalytics('funnel_change', 'gameStarts');
+}
+function logChangeGameOver(solvedCount) {
+  const bucket = Math.floor(solvedCount / 5) * 5;
+  logAnalytics('change_solved_buckets', `bucket_${bucket}`);
 }
 
 /* ===================== 결과 공유 (SNS/카톡 텍스트 복사) =====================
@@ -592,6 +762,18 @@ const TABLE_SUCCESS_TITLES = [
   '반사신경 괴물',
   '밥상 위의 도(道)를 깨달은 자',
   '무결점 걸뱅이 신'
+];
+
+// 거스름돈 타짜는 무한 서바이벌이라 "클리어" 개념이 없음 - 항상 이 칭호 풀에서 랜덤 배정
+// (해결한 문제 수와 무관하게 병맛 톤 유지, 문제 수는 공유문구에 숫자로 그대로 노출됨)
+const CHANGE_RESULT_TITLES = [
+  '계산기 두고 온 자',
+  '동전 세다 정신줄 놓은 자',
+  '십 원 한 닢에 무너진 자',
+  '거스름돈계의 반쪽짜리 장인',
+  '손님한테 등짝 맞기 직전인 자',
+  '동대문 짬바 인정 (조금)',
+  '암산의 신, 이번엔 아니었음'
 ];
 
 function pickRandom(arr) {
@@ -823,6 +1005,15 @@ const GAME_LIST = [
     enabled: true,
     sceneKey: 'TableScene',
     scoresCollection: 'scores_table'
+  },
+  {
+    key: 'change',
+    emoji: '💸',
+    title: '동대문 짬바 - 거스름돈 타짜',
+    desc: '암산으로 거스름돈을 계산해서 정확히 맞춰라! 무한 서바이벌.',
+    enabled: true,
+    sceneKey: 'ChangeScene',
+    scoresCollection: 'scores_change'
   }
 ];
 
@@ -907,7 +1098,7 @@ class HubScene extends Phaser.Scene {
           if (this.hasDragged) return;
           event.stopPropagation();
           SFX.click();
-          showRankOnlyView(game.scoresCollection);
+          openRankingFor(game.scoresCollection);
         });
       } else {
         const soonLabel = this.add.text(cardWidth / 2 - 60, cardY, '준비중', {
@@ -1811,6 +2002,375 @@ class TableScene extends Phaser.Scene {
   }
 }
 
+/* ===================== 동대문 짬바 - 거스름돈 타짜 씬 - 계산형 무한 서바이벌 =====================
+   물건 가격 + 손님이 낸 돈을 보여주고, 암산으로 거스름돈을 계산해서 지폐/동전 버튼 조합으로
+   정확히 맞춰야 함. 라운드(문제)마다 제한시간이 있고, "이 문제를 풀려면 최소 몇 번 눌러야
+   하는지"를 그리디 알고리즘으로 계산해서 시간에 반영 (물리적으로 불가능한 문제가 안 나오게 함).
+   무한 서바이벌이라 "클리어"가 없고, 랭킹 지표는 "해결한 문제 수"(scores_change, 높을수록 우수). */
+const CHANGE_DIFFICULTY_RAMP_ROUNDS = 10;
+const CHANGE_DIFFICULTY_SOFT_RAMP_ROUNDS = 40;
+const CHANGE_PAYMENT_OPTIONS = [1000, 5000, 10000];
+const CHANGE_DENOMINATIONS = [5000, 1000, 500, 100, 50, 10];
+
+function changeDifficultyProgress(round) {
+  const base = Math.min(1, (round - 1) / (CHANGE_DIFFICULTY_RAMP_ROUNDS - 1));
+  const extra = Math.max(0, Math.min(round, CHANGE_DIFFICULTY_SOFT_RAMP_ROUNDS) - CHANGE_DIFFICULTY_RAMP_ROUNDS)
+    / (CHANGE_DIFFICULTY_SOFT_RAMP_ROUNDS - CHANGE_DIFFICULTY_RAMP_ROUNDS) * 0.5;
+  return base + extra;
+}
+function getChangeBaseThinkTime(round) {
+  return Phaser.Math.Clamp(Phaser.Math.Linear(4.0, 1.0, changeDifficultyProgress(round)), 1.0, 4.0);
+}
+function getChangeMax(round) {
+  const raw = Phaser.Math.Linear(90, 4990, changeDifficultyProgress(round));
+  return Math.min(9000, Math.round(raw / 10) * 10);
+}
+function minTapsForChange(amount) {
+  let remaining = amount;
+  let taps = 0;
+  for (const d of CHANGE_DENOMINATIONS) {
+    const count = Math.floor(remaining / d);
+    taps += count;
+    remaining -= count * d;
+  }
+  return taps;
+}
+function getChangeFullTimeLimit(round, roundData) {
+  const taps = minTapsForChange(roundData.change);
+  const perTapAllowance = 0.42;
+  const multiItemBonus = roundData.isMulti ? 0.7 : 0;
+  return getChangeBaseThinkTime(round) + taps * perTapAllowance + multiItemBonus;
+}
+function generateChangeRound(round) {
+  const changeMax = getChangeMax(round);
+  const change = Phaser.Math.Between(1, changeMax / 10) * 10;
+  const payment = CHANGE_PAYMENT_OPTIONS.find(p => p > change) || 10000;
+  const totalPrice = payment - change;
+
+  const canSplit = totalPrice >= 20;
+  const isMulti = round >= 8 && canSplit && Math.random() < 0.35;
+
+  if (isMulti) {
+    let price1 = Phaser.Math.Between(1, Math.floor((totalPrice - 10) / 10)) * 10;
+    price1 = Phaser.Math.Clamp(price1, 10, totalPrice - 10);
+    const price2 = totalPrice - price1;
+    return { items: [price1, price2], payment, change, isMulti: true };
+  }
+  return { items: [totalPrice], payment, change, isMulti: false };
+}
+
+const CHANGE_CUSTOMER_LINES = [
+  '사장님, 딱 맞게 주세요!',
+  '빨리요, 버스 놓치겠어요!',
+  '거스름돈 정확히 계산해주세요~',
+  '어이구 바쁘다 바빠, 얼른요!',
+  '이모, 계산 좀 빨리요!',
+  '잔돈 없으면 안 돼요, 정확히!'
+];
+const CHANGE_CUSTOMER_LINES_MULTI = [
+  '이거 두 개 같이 계산해주세요!',
+  '이것도 하나 더요, 한꺼번에 계산!',
+  '두 개 다 얼마예요? 합쳐서 주세요!'
+];
+const CHANGE_HYPE_QUOTES = [
+  '동대문 짬바 인정.',
+  '이 손, 계산기가 필요 없다.',
+  '거스름돈계의 장인.',
+  '십 원 하나 틀림없다.',
+  '시장 바닥의 전설이 되어간다.'
+];
+function getChangeHypeQuote() {
+  return Phaser.Utils.Array.GetRandom(CHANGE_HYPE_QUOTES);
+}
+
+class ChangeScene extends Phaser.Scene {
+  constructor() { super('ChangeScene'); }
+
+  init() {
+    this.round = 1;
+    this.solvedCount = 0;
+    this.streak = 0;
+    this.maxStreak = 0;
+    this.lives = 3;
+    this.startTime = null;
+    this.hasStarted = false;
+    this.gameOver = false;
+    this.currentTotal = 0;
+    this.addedStack = [];
+    this.roundResolved = false;
+  }
+
+  create() {
+    hideLeaderboardOverlay();
+    this.cameras.main.fadeIn(200, 0, 0, 0);
+    logChangeStart();
+
+    this.add.rectangle(0, 0, 900, 560, 0x1f2937).setOrigin(0);
+    for (let i = 0; i < 40; i++) {
+      this.add.circle(
+        Phaser.Math.Between(0, 900), Phaser.Math.Between(0, 400),
+        Phaser.Math.Between(1, 2), 0xffffff, Phaser.Math.FloatBetween(0.2, 0.6)
+      );
+    }
+
+    this.livesText = this.add.text(20, 20, '❤️'.repeat(this.lives), { fontSize: '22px' });
+    this.roundText = this.add.text(20, 50, '', { fontSize: '18px', color: '#ffffff' });
+    this.elapsedTimeText = this.add.text(20, 78, '시간: 0.0s', { fontSize: '16px', color: '#cccccc' });
+    this.streakText = this.add.text(880, 20, '', { fontSize: '15px', color: '#ff9f43', fontStyle: 'bold' }).setOrigin(1, 0);
+
+    this.customerLineText = this.add.text(450, 108, '', { fontSize: '15px', color: '#ffd54a', align: 'center' }).setOrigin(0.5);
+    this.problemText = this.add.text(450, 142, '', {
+      fontSize: '19px', color: '#ffffff', align: 'center', wordWrap: { width: 620 }
+    }).setOrigin(0.5);
+
+    this.timerBarBg = this.add.rectangle(450, 188, 620, 14, 0x333333).setStrokeStyle(2, 0x555555);
+    this.timerBarFill = this.add.rectangle(140, 188, 620, 10, 0x4ecdc4).setOrigin(0, 0.5);
+
+    this.add.text(450, 218, '현재 지급액', { fontSize: '13px', color: '#999999' }).setOrigin(0.5);
+    this.totalText = this.add.text(450, 245, '0원', { fontSize: '30px', color: '#4ecdc4', fontStyle: 'bold' }).setOrigin(0.5);
+
+    this.resultText = this.add.text(450, 282, '', {
+      fontSize: '15px', color: '#ff6b6b', fontStyle: 'bold', align: 'center', wordWrap: { width: 700 }
+    }).setOrigin(0.5);
+
+    // --- 지폐/동전 버튼 (한 줄 6개) ---
+    const cols = CHANGE_DENOMINATIONS.length;
+    const btnW = 130, btnH = 68, gapX = 14;
+    const totalWidth = cols * btnW + (cols - 1) * gapX;
+    const startX = 450 - totalWidth / 2 + btnW / 2;
+    const btnY = 340;
+
+    this.denomButtons = {};
+    this.denomGameObjects = [];
+    CHANGE_DENOMINATIONS.forEach((val, i) => {
+      const bx = startX + i * (btnW + gapX);
+      const isBill = val >= 1000;
+
+      const btn = this.add.rectangle(bx, btnY, btnW, btnH, isBill ? 0x2f855a : 0x8d6e63)
+        .setStrokeStyle(2, 0x000000).setInteractive({ useHandCursor: true });
+      const label = this.add.text(bx, btnY - 8, `${val.toLocaleString()}원`, {
+        fontSize: '16px', color: '#ffffff', fontStyle: 'bold'
+      }).setOrigin(0.5);
+      const badge = this.add.text(bx, btnY + 18, '', {
+        fontSize: '13px', color: '#ffe66d', fontStyle: 'bold'
+      }).setOrigin(0.5);
+      this.denomButtons[val] = badge;
+      this.denomGameObjects.push(btn, label, badge);
+
+      btn.on('pointerdown', () => { SFX.click(); this.addDenomination(val); });
+      btn.on('pointerover', () => btn.setAlpha(0.8));
+      btn.on('pointerout', () => btn.setAlpha(1));
+    });
+
+    const controlsY = btnY + btnH / 2 + 45;
+    const undoBtn = this.add.rectangle(340, controlsY, 200, 42, 0x555555).setInteractive({ useHandCursor: true });
+    const undoLabel = this.add.text(340, controlsY, '⬅️ 되돌리기', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    undoBtn.on('pointerdown', () => { SFX.click(); this.undoLast(); });
+
+    const resetBtn = this.add.rectangle(560, controlsY, 200, 42, 0x555555).setInteractive({ useHandCursor: true });
+    const resetLabel = this.add.text(560, controlsY, '🔄 초기화', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    resetBtn.on('pointerdown', () => { SFX.click(); this.resetTotal(); });
+
+    const submitY = controlsY + 52;
+    const submitBtn = this.add.rectangle(450, submitY, 460, 48, 0xffe66d).setInteractive({ useHandCursor: true });
+    const submitLabel = this.add.text(450, submitY, '💰 손님한테 전달!', { fontSize: '17px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    submitBtn.on('pointerdown', () => { SFX.click(); this.submitChange(); });
+
+    this.hintText = this.add.text(450, 520, '지폐/동전 버튼으로 거스름돈을 조합한 뒤 전달하세요. 시간 안에 정확히 맞춰야 합니다!', {
+      fontSize: '13px', color: '#cccccc'
+    }).setOrigin(0.5);
+
+    // 종료 화면에서 한꺼번에 숨길 게임플레이 오브젝트 모음
+    this.gameplayObjects = [
+      this.customerLineText, this.problemText, this.timerBarBg, this.timerBarFill,
+      this.totalText, this.resultText, undoBtn, undoLabel, resetBtn, resetLabel,
+      submitBtn, submitLabel, this.hintText, this.streakText,
+      ...this.denomGameObjects
+    ];
+
+    this.updateLivesUI();
+    this.setupChangeRound();
+  }
+
+  setupChangeRound() {
+    this.roundData = generateChangeRound(this.round);
+    this.timeLimit = getChangeFullTimeLimit(this.round, this.roundData);
+    this.timeRemaining = this.timeLimit;
+    this.roundResolved = false;
+    this.resetTotal();
+    this.resultText.setText('');
+
+    const linePool = this.roundData.isMulti ? CHANGE_CUSTOMER_LINES_MULTI : CHANGE_CUSTOMER_LINES;
+    this.customerLineText.setText(Phaser.Utils.Array.GetRandom(linePool));
+
+    const itemsLine = this.roundData.isMulti
+      ? `물건: ${this.roundData.items[0].toLocaleString()}원 + ${this.roundData.items[1].toLocaleString()}원`
+      : `물건 가격: ${this.roundData.items[0].toLocaleString()}원`;
+    this.problemText.setText(`${itemsLine}\n손님이 낸 돈: ${this.roundData.payment.toLocaleString()}원`);
+    this.roundText.setText(`문제 ${this.round} (해결: ${this.solvedCount}개)`);
+  }
+
+  updateLivesUI() {
+    this.livesText.setText('❤️'.repeat(this.lives) + '🖤'.repeat(Math.max(0, 3 - this.lives)));
+  }
+
+  updateStreakUI() {
+    this.streakText.setText(this.streak >= 2 ? `🔥 ${this.streak}연속 정답중` : '');
+  }
+
+  addDenomination(val) {
+    if (this.gameOver) return;
+    if (!this.hasStarted) {
+      this.hasStarted = true;
+      this.startTime = Date.now();
+    }
+    this.currentTotal += val;
+    this.addedStack.push(val);
+    this.totalText.setText(`${this.currentTotal.toLocaleString()}원`);
+    this.refreshDenomBadges();
+  }
+
+  undoLast() {
+    if (this.gameOver || this.addedStack.length === 0) return;
+    const last = this.addedStack.pop();
+    this.currentTotal -= last;
+    this.totalText.setText(`${this.currentTotal.toLocaleString()}원`);
+    this.refreshDenomBadges();
+  }
+
+  resetTotal() {
+    this.currentTotal = 0;
+    this.addedStack = [];
+    this.totalText.setText('0원');
+    this.refreshDenomBadges();
+  }
+
+  refreshDenomBadges() {
+    if (!this.denomButtons) return;
+    const counts = {};
+    this.addedStack.forEach(v => { counts[v] = (counts[v] || 0) + 1; });
+    CHANGE_DENOMINATIONS.forEach(val => {
+      const count = counts[val] || 0;
+      this.denomButtons[val].setText(count > 0 ? `×${count}` : '');
+    });
+  }
+
+  submitChange() {
+    if (this.gameOver || this.roundResolved) return;
+    if (!this.hasStarted) {
+      this.hasStarted = true;
+      this.startTime = Date.now();
+    }
+    if (this.currentTotal === this.roundData.change) {
+      this.onChangeCorrect();
+    } else {
+      this.onChangeWrongOrTimeout(false);
+    }
+  }
+
+  onChangeCorrect() {
+    SFX.land();
+    this.roundResolved = true;
+    this.solvedCount++;
+    this.streak++;
+    this.maxStreak = Math.max(this.maxStreak, this.streak);
+    this.updateStreakUI();
+    this.resultText.setColor('#4ecdc4');
+    const streakSuffix = this.streak >= 3 ? ` (🔥 ${this.streak}연속!)` : '';
+    this.resultText.setText(`✅ 정확합니다! "${getChangeHypeQuote()}"${streakSuffix}`);
+
+    this.round++;
+    this.time.delayedCall(600, () => this.setupChangeRound());
+  }
+
+  onChangeWrongOrTimeout(isTimeout) {
+    SFX.fall();
+    this.roundResolved = true;
+    this.lives--;
+    this.streak = 0;
+    this.updateStreakUI();
+    this.updateLivesUI();
+    this.resultText.setColor('#ff6b6b');
+    this.resultText.setText(
+      (isTimeout ? '⏰ 시간 초과! ' : '❌ 틀렸습니다! ') +
+      `정답은 ${this.roundData.change.toLocaleString()}원 이었습니다.`
+    );
+
+    if (this.lives <= 0) {
+      this.finishChangeGame();
+    } else {
+      this.time.delayedCall(1200, () => this.setupChangeRound());
+    }
+  }
+
+  update(time, delta) {
+    if (this.gameOver) return;
+
+    if (this.hasStarted) {
+      const elapsed = (Date.now() - this.startTime) / 1000;
+      this.elapsedTimeText.setText(`시간: ${elapsed.toFixed(1)}s`);
+    }
+
+    if (this.roundResolved) return;
+    const dt = delta / 1000;
+    this.timeRemaining -= dt;
+    const ratio = Math.max(0, this.timeRemaining / this.timeLimit);
+    this.timerBarFill.width = 620 * ratio;
+    this.timerBarFill.setFillStyle(ratio < 0.3 ? 0xff6b6b : 0x4ecdc4);
+
+    if (this.timeRemaining <= 0) {
+      this.onChangeWrongOrTimeout(true);
+    }
+  }
+
+  finishChangeGame() {
+    this.gameOver = true;
+    SFX.gameover();
+    logChangeGameOver(this.solvedCount);
+
+    // 게임플레이 UI 전부 숨기고 결과 화면으로 전환
+    this.gameplayObjects.forEach(obj => obj.setVisible(false));
+
+    this.roundText.setText('');
+    const messageText = this.add.text(450, 180, '💥 목숨 소진 💀', { fontSize: '32px', color: '#ff6b6b', fontStyle: 'bold' }).setOrigin(0.5);
+    this.add.text(450, 225, `총 ${this.solvedCount}문제 해결 (최고 연속 ${this.maxStreak}개)`, {
+      fontSize: '18px', color: '#ffe66d', fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    const restartBtn = this.add.rectangle(450, 320, 160, 46, 0xffe66d).setInteractive({ useHandCursor: true });
+    this.add.text(450, 320, '다시 도전', { fontSize: '18px', color: '#333', fontStyle: 'bold' }).setOrigin(0.5);
+    restartBtn.on('pointerover', () => restartBtn.setFillStyle(0xfff3a0));
+    restartBtn.on('pointerout', () => restartBtn.setFillStyle(0xffe66d));
+    restartBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.restart(); });
+
+    const rankBtn = this.add.rectangle(450, 376, 240, 40, 0x4ecdc4).setInteractive({ useHandCursor: true });
+    this.add.text(450, 376, '🏆 기록 등록 / 랭킹보기', { fontSize: '15px', color: '#003333', fontStyle: 'bold' }).setOrigin(0.5);
+    rankBtn.on('pointerdown', () => { SFX.click(); showScoreSubmitView(this.solvedCount, 'scores_change'); });
+
+    const titleBtn = this.add.rectangle(450, 424, 160, 36, 0x666666).setInteractive({ useHandCursor: true });
+    this.add.text(450, 424, '게임 목록으로', { fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+    titleBtn.on('pointerdown', () => { SFX.click(); hideLeaderboardOverlay(); this.scene.start('HubScene'); });
+
+    const shareBtn = this.add.rectangle(450, 470, 240, 34, 0x8d6e63).setInteractive({ useHandCursor: true });
+    const shareLabel = this.add.text(450, 470, '📋 결과 공유문구 복사', { fontSize: '13px', color: '#fff', fontStyle: 'bold' }).setOrigin(0.5);
+    shareBtn.on('pointerdown', async () => {
+      SFX.click();
+      const title = Phaser.Utils.Array.GetRandom(CHANGE_RESULT_TITLES);
+      const shareText = [
+        '🫥 걸뱅이 아케이드',
+        '💸 동대문 짬바 - 거스름돈 타짜',
+        `📊 ${this.solvedCount}문제 해결 (최고 연속 ${this.maxStreak}개)`,
+        `"${title}"`,
+        '너도 와서 내 기록 깨봐라 👉',
+        GAME_SHARE_URL
+      ].join('\n');
+      const ok = await copyTextToClipboard(shareText);
+      shareLabel.setText(ok ? '✅ 복사 완료! 카톡에 붙여넣기' : '복사 실패, 다시 시도해주세요');
+      this.time.delayedCall(1800, () => shareLabel.setText('📋 결과 공유문구 복사'));
+    });
+  }
+}
+
 const config = {
   type: Phaser.AUTO,
   width: 900,
@@ -1818,7 +2378,7 @@ const config = {
   parent: 'game-container',
   backgroundColor: '#1a1a2e',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
-  scene: [HubScene, MainScene, SignalScene, TableScene]
+  scene: [HubScene, MainScene, SignalScene, TableScene, ChangeScene]
 };
 
 new Phaser.Game(config);
